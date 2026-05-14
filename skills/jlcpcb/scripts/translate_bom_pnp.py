@@ -253,7 +253,34 @@ def _normalize_layer(s: str) -> str:
     return s.strip()  # passthrough if unknown
 
 
-def translate_pnp(input_path: Path, output_path: Path) -> dict:
+def _bom_designator_set(bom_csv: Path) -> set[str]:
+    """Read a JLCPCB-format BOM CSV and expand the Designator column into a set.
+
+    Multi-designator entries are comma-separated within the field (e.g.,
+    'C1, C2, C5' -> {'C1', 'C2', 'C5'}).
+    """
+    refs: set[str] = set()
+    with open(bom_csv, newline="", encoding="utf-8-sig", errors="replace") as f:
+        for row in csv.DictReader(f):
+            for r in (row.get("Designator") or "").split(","):
+                r = r.strip()
+                if r:
+                    refs.add(r)
+    return refs
+
+
+def translate_pnp(input_path: Path, output_path: Path, bom_filter_path: Path | None = None) -> dict:
+    """Translate a Pick & Place file to JLCPCB CPL format.
+
+    Args:
+        input_path: client P&P CSV (Altium mil, KiCad mm, etc.)
+        output_path: where to write the JLCPCB CPL CSV
+        bom_filter_path: if given, the CPL output only includes designators
+            that appear in that BOM's Designator column (expanded). Use this
+            to drop orphan placements (mounting holes, fiducials, unstuffed
+            test points) that would cause JLCPCB to reject the upload with
+            'CPL does not match BOM'.
+    """
     rows = _read_csv_rows(Path(input_path))
     header_idx = _find_pnp_header_row(rows)
     hdr = [_norm(c) for c in rows[header_idx]]
@@ -279,7 +306,19 @@ def translate_pnp(input_path: Path, output_path: Path) -> dict:
             units_hint = "inch"
             break
 
-    stats = {"input_rows": 0, "output_rows": 0, "top_count": 0, "bot_count": 0}
+    bom_refs: set[str] | None = None
+    if bom_filter_path is not None:
+        bom_refs = _bom_designator_set(Path(bom_filter_path))
+
+    stats = {
+        "input_rows": 0,
+        "output_rows": 0,
+        "top_count": 0,
+        "bot_count": 0,
+        "filtered_orphans": 0,
+        "filter_mode": "bom_match" if bom_refs is not None else "all",
+    }
+    orphan_samples: list[str] = []
     out_rows: list[dict[str, str]] = []
     for row in rows[header_idx + 1:]:
         if not row or not any(_norm(c) for c in row):
@@ -288,6 +327,11 @@ def translate_pnp(input_path: Path, output_path: Path) -> dict:
         if not des or des.startswith("="):
             continue
         stats["input_rows"] += 1
+        if bom_refs is not None and des not in bom_refs:
+            stats["filtered_orphans"] += 1
+            if len(orphan_samples) < 15:
+                orphan_samples.append(des)
+            continue
         x = _norm(row[col_x]) if col_x < len(row) else ""
         y = _norm(row[col_y]) if col_y < len(row) else ""
         layer = _norm(row[col_layer]) if col_layer < len(row) else ""
@@ -305,6 +349,8 @@ def translate_pnp(input_path: Path, output_path: Path) -> dict:
             "Layer": normalized_layer,
             "Rotation": rot,
         })
+    if orphan_samples:
+        stats["orphan_samples"] = orphan_samples
 
     out_path = Path(output_path)
     with open(out_path, "w", newline="", encoding="utf-8") as f:
@@ -328,11 +374,13 @@ def _cli():
     pp = sub.add_parser("pnp", help="Translate a Pick&Place CSV to JLCPCB CPL")
     pp.add_argument("input")
     pp.add_argument("-o", "--output", required=True)
+    pp.add_argument("--bom", help="Filter CPL output to only designators present in this BOM (prevents 'CPL does not match BOM' upload error)")
     args = p.parse_args()
     if args.cmd == "bom":
         stats = translate_bom(Path(args.input), Path(args.output))
     elif args.cmd == "pnp":
-        stats = translate_pnp(Path(args.input), Path(args.output))
+        bom_path = Path(args.bom) if args.bom else None
+        stats = translate_pnp(Path(args.input), Path(args.output), bom_filter_path=bom_path)
     import json
     print(json.dumps(stats, indent=2))
 

@@ -58,27 +58,103 @@ All POST unless noted. Prefix: `/overseas/openapi/`.
 
 **3D Printing**: `tdp/api/{calculate,upload,order/{create,list,detail,process},file/result}`.
 
-### Standard PCBA quote workflow (always do this step)
+### Standard PCBA quote workflow — the MANDATORY steps
 
-When a client provides BOM and Pick & Place files for a PCBA quote (in any format — Altium .xlsx, KiCad CSV, OrCAD, etc.), **always translate them to JLCPCB's canonical upload format first**:
+When a client provides BOM and Pick & Place files for a PCBA quote (in any format — Altium .xlsx, KiCad CSV, OrCAD, etc.), follow ALL of these steps. None are optional.
+
+#### Step 1: Translate BOM first (gives you the canonical Designator set)
 
 ```bash
 jlcpcb-cli bom translate "Client BOM.xlsx" -o "Client BOM-jlc-formatted.csv"
-jlcpcb-cli pnp translate "Client Pick & Place.csv" -o "Client Pick & Place-jlc-formatted.csv"
 ```
 
-The translator handles:
-- Multi-row alternate-manufacturer entries (collapses to primary MPN + alternates noted)
-- mil → mm coordinate conversion (auto-detected from header)
-- Layer name normalization (TopLayer/Top/F.Cu → T; BottomLayer/Bottom/B.Cu → B)
-- PCB / NO STUFF / DNP row filtering
-- Column auto-mapping (Designator/Ref Des, Comment/Description/Value, MPN/Mfg PN, etc.)
+#### Step 2: Translate Pick & Place, **always passing `--bom`** so the CPL is filtered
+
+```bash
+jlcpcb-cli pnp translate "Client Pick & Place.csv" \
+  -o "Client Pick & Place-jlc-formatted.csv" \
+  --bom "Client BOM-jlc-formatted.csv"
+```
+
+**ALWAYS pass `--bom`.** Without it, the CPL will include placements for mounting holes (`MH*`), fiducials, unstuffed test points (TP Pads), and `NO STUFF` components — none of which exist in the BOM. JLCPCB's matcher rejects the upload with **"CPL does not match BOM"** when CPL has orphan designators. The `--bom` filter drops these and guarantees perfect designator parity.
+
+Verify parity before handing off the files:
+
+```bash
+python3 -c "
+import csv
+b = set(); c = set()
+for r in csv.DictReader(open('Client BOM-jlc-formatted.csv')):
+    for d in r['Designator'].split(','):
+        if d.strip(): b.add(d.strip())
+for r in csv.DictReader(open('Client Pick & Place-jlc-formatted.csv')):
+    if r['Designator'].strip(): c.add(r['Designator'].strip())
+print(f'BOM: {len(b)}  CPL: {len(c)}  CPL-orphans: {len(c-b)}  BOM-only: {len(b-c)}')
+"
+```
+
+CPL-orphans should be **0**. BOM-only is fine (those are joined refdes lists in the BOM that map to multiple stuffed positions in CPL).
+
+#### Step 3 (MANDATORY): Tabulate consigned-parts cost as part of the quote
+
+JLCPCB only assembles parts they can source from their LCSC library. Any part on the BOM that is NOT in LCSC stock (or is in stock but the client requires the exact MPN that LCSC doesn't carry) must be **procured by you and shipped to JLCPCB** for consigned assembly. **The cost of those parts MUST appear in the project quote**, even though the client doesn't pay JLCPCB for them — they pay you (or DigiKey/Mouser/element14) for the parts plus shipping. Break the consigned-parts subtotal out separately from the JLCPCB PCBA quote so the client sees both line items.
+
+Algorithm:
+
+1. For each line in the translated BOM, look up the MPN in LCSC's library:
+
+    ```bash
+    jlcpcb-cli component <C-number> --json     # if you already have a C-number
+    jlcpcb-cli component-search "<MPN>" --json  # search by manufacturer part number
+    ```
+
+    For free / no-auth lookup of MPN→C-number mapping, use the community jlcsearch API (see the `lcsc` skill).
+
+2. Classify each BOM line as:
+   - **Basic** (JLC sources, free) — `basic` flag in JLC response
+   - **Extended** (JLC sources, $3 setup fee) — `basic == 0`, in stock
+   - **Consigned** (you ship to JLC) — not in LCSC library, or LCSC stock = 0, or client requires exact MPN that LCSC doesn't have
+
+3. For every Consigned line, query DigiKey / Mouser / element14 / direct manufacturer for the per-unit price at the build quantity (× boards × +20% spares is typical). Use the `digikey`, `mouser`, or `element14` skills.
+
+4. Build the consigned-parts cost table — one row per Consigned MPN:
+
+    | MPN | Qty/board | Boards | +Spares | Total qty | Source | Unit price | Extended | Notes |
+    |---|---|---|---|---|---|---|---|---|
+
+5. **Include the consigned-parts subtotal in the project quote**, formatted as:
+
+    ```
+    Project Quote
+      JLCPCB Bare PCB                              $XXX.XX
+      JLCPCB PCBA labor + extended-part fees       $XXX.XX
+      JLCPCB Shipping (DHL DDP)                    $XX.XX
+      ---
+      Consigned-parts procurement (you ship):      $XXX.XX
+        (broken-out table follows — see "consigned-parts cost" subsection)
+      Shipping to JLCPCB (DHL international)       $XX.XX
+      ---
+      All-in landed cost                           $X,XXX.XX
+    ```
+
+The client must see the consigned-parts cost or the quote is incomplete. Even though JLCPCB doesn't invoice for those parts, the client is still spending real money on them.
+
+### Translator behavior summary
+
+| Concern | Handled |
+|---|---|
+| Multi-row alternate-manufacturer entries in xlsx | Collapses to primary MPN, alternates noted |
+| mil → mm coordinate conversion | Auto-detected from header (`Center-X(mil)`, `(mm)`, `(inch)`) |
+| Layer name normalization | TopLayer/Top/F.Cu → T; BottomLayer/Bottom/B.Cu → B |
+| PCB / NO STUFF / DNP row filtering in BOM | Excluded automatically |
+| CPL-vs-BOM designator orphan filtering | Use `--bom <path>` on `pnp translate` (MANDATORY) |
+| Column auto-mapping (Designator/Ref Des/Reference, etc.) | `BOM_*_FIELDS` and `PNP_*_FIELDS` tuples in the translator |
 
 Output:
-- **BOM CSV** columns: `Comment, Designator, Footprint, LCSC Part #` (plus MPN/Manufacturer/Quantity/Notes for human review)
-- **CPL CSV** columns: `Designator, Mid X (mm), Mid Y (mm), Layer (T|B), Rotation`
+- **BOM CSV**: `Comment, Designator, Footprint, LCSC Part #` (plus MPN/Manufacturer/Quantity/Notes for review)
+- **CPL CSV**: `Designator, Mid X (mm), Mid Y (mm), Layer (T|B), Rotation`
 
-If a client uses an unusual format that the translator doesn't auto-detect, edit `~/.claude/skills/jlcpcb/scripts/translate_bom_pnp.py` to add the new column name to the `BOM_*_FIELDS` or `PNP_*_FIELDS` tuples. Then commit the improvement to rp1-home.
+If a client uses an unusual format that the translator doesn't auto-detect, edit `~/.claude/skills/jlcpcb/scripts/translate_bom_pnp.py` to add the new column name to the relevant `*_FIELDS` tuple. Then commit the improvement upstream to `MattStarfield/kicad-happy`.
 
 ### Discovery references
 
