@@ -1,6 +1,6 @@
 ---
 name: jlcpcb
-description: JLCPCB PCB fabrication and assembly — BOM/CPL generation, basic vs extended parts, assembly constraints, design rules, ordering workflow. Use with KiCad for JLCPCB manufacturing. Use this skill when the user mentions JLCPCB, wants to order PCBs or assembled boards, needs prototype bare PCBs and stencils, wants to know JLCPCB design rules and capabilities, or is asking about PCB manufacturing costs or turnaround times. For gerber/CPL export, stencil ordering, and BOM management, see the `bom` skill.
+description: JLCPCB PCB fabrication and assembly — Open Platform API (signed HMAC-SHA256), instant quoting, order tracking, component lookup, BOM/CPL translation from any client format. Use with KiCad for JLCPCB manufacturing. Use this skill when the user mentions JLCPCB, wants to order PCBs or assembled boards, needs prototype bare PCBs and stencils, wants to know JLCPCB design rules and capabilities, is asking about PCB manufacturing costs or turnaround times, wants to translate a client BOM/Pick&Place file to JLCPCB upload format, or needs component lookup against JLCPCB's library. For gerber/CPL export, stencil ordering, and BOM management, see the `bom` skill.
 ---
 
 # JLCPCB — PCB Fabrication & Assembly
@@ -8,6 +8,85 @@ description: JLCPCB PCB fabrication and assembly — BOM/CPL generation, basic v
 JLCPCB is a PCB fabrication and assembly service based in Shenzhen, China. It is a sister company to LCSC Electronics (common ownership) — they share the same parts library.
 
 **Typical usage**: Order bare prototype PCBs + framed stencil from JLCPCB during prototyping (parts sourced separately from DigiKey/Mouser, hand-assembled in lab). For production runs (100s qty), order fully assembled boards from JLCPCB using LCSC parts. PCBWay is an alternative assembler. For component searching, see the `lcsc` skill. For BOM management, gerber/CPL export, and stencil ordering, see the `bom` skill.
+
+## How to use this skill — the `jlcpcb-cli` tool
+
+Matt has an approved JLCPCB Open Platform API account. A working CLI is on PATH at `~/.local/bin/jlcpcb-cli` (wraps `~/scripts/jlcpcb-api/jlcpcb_cli.py`).
+
+**Always reach for `jlcpcb-cli` first** for anything programmatic against JLCPCB. Fall back to Playwright only for PCBA workflows (assembly is NOT exposed via the API).
+
+```
+jlcpcb-cli auth verify              # confirm credentials + which API scopes are active
+jlcpcb-cli component C14663         # look up an LCSC C-number
+jlcpcb-cli component-search 100nF   # search public component library
+jlcpcb-cli private-stock            # list consigned (private) component inventory
+jlcpcb-cli pcb quote <fileId> --layers 8 --qty 10 --finish ENIG --thickness 1.6
+jlcpcb-cli pcb audit <fileId>       # parsed Gerber info (dimensions, preview)
+jlcpcb-cli pcb order detail <batchNum>
+jlcpcb-cli pcb order wip <batchNum>
+jlcpcb-cli bom translate <input.xlsx|.csv> -o <output.csv>
+jlcpcb-cli pnp translate <input.csv> -o <output-cpl.csv>
+```
+
+Default output is human-readable tables. **For programmatic / LLM consumption always pass `--json`** to get parseable output.
+
+### Credentials & auth
+
+- Credentials live at `~/.config/jlcpcb/credentials.json` (mode 0600). NEVER print them, commit them, or paste them into conversation.
+- The shell auto-loader at `~/.bashrc.d/87-jlcpcb-api.sh` exports `JLCPCB_APP_ID`, `JLCPCB_ACCESS_KEY`, `JLCPCB_SECRET_KEY` into every new shell so subprocesses see them.
+- Auth scheme: HMAC-SHA256 signed requests with `Authorization: JOP appid=...,accesskey=...,nonce=...,timestamp=...,signature=...` per JLCPCB's API docs.
+
+### Known gotcha — per-API permission scopes
+
+Even with valid credentials, each API category (PCB / Parts / Stencil / 3D) must be enabled in the developer console. Until enabled, endpoints return `403 "API insufficient permissions, access denied"`. **The CLI catches this specifically** and prints what to do:
+
+> Sign in at https://api.jlcpcb.com → Manage Apps → Permission Setting, toggle on the relevant scope, wait for status to flip from `Reviewing` to `Active`.
+
+### Hard limit — PCBA is NOT in the public API
+
+The JLCPCB Open Platform API covers: **bare PCB quoting/ordering, Stencil, 3D Printing, Components**. It does **NOT** include PCB **Assembly** (PCBA) quoting or ordering. The published endpoint catalog (api.jlcpcb.com/docs/api-list) confirms this.
+
+For PCBA workflows we use Playwright against `cart.jlcpcb.com/quote` with the user's logged-in browser session. Reference implementation in conversation history of geltech project, 2026-05-13.
+
+### Endpoint catalog (base: `https://open.jlcpcb.com`)
+
+All POST unless noted. Prefix: `/overseas/openapi/`.
+
+**PCB**: `pcb/calculate` (quote) · `pcb/create` (order) · `pcb/order/detail` · `pcb/audit/get` (Gerber parse) · `pcb/wip/get` (production status) · `pcb/uploadGerber` (multipart) · `pcb/uploadBlindViaHoleImg` · `pcb/getImpedanceTemplateSettingList` · `pcb/getSteelPriceConfig` (GET).
+
+**Components**: `component/getComponentDetailByCode` (by C-number) · `component/getComponentLibraryList` (paginated) · `component/getPrivateComponentLibrary` (consigned inventory) · `component/getComponentInfos`.
+
+**3D Printing**: `tdp/api/{calculate,upload,order/{create,list,detail,process},file/result}`.
+
+### Standard PCBA quote workflow (always do this step)
+
+When a client provides BOM and Pick & Place files for a PCBA quote (in any format — Altium .xlsx, KiCad CSV, OrCAD, etc.), **always translate them to JLCPCB's canonical upload format first**:
+
+```bash
+jlcpcb-cli bom translate "Client BOM.xlsx" -o "Client BOM-jlc-formatted.csv"
+jlcpcb-cli pnp translate "Client Pick & Place.csv" -o "Client Pick & Place-jlc-formatted.csv"
+```
+
+The translator handles:
+- Multi-row alternate-manufacturer entries (collapses to primary MPN + alternates noted)
+- mil → mm coordinate conversion (auto-detected from header)
+- Layer name normalization (TopLayer/Top/F.Cu → T; BottomLayer/Bottom/B.Cu → B)
+- PCB / NO STUFF / DNP row filtering
+- Column auto-mapping (Designator/Ref Des, Comment/Description/Value, MPN/Mfg PN, etc.)
+
+Output:
+- **BOM CSV** columns: `Comment, Designator, Footprint, LCSC Part #` (plus MPN/Manufacturer/Quantity/Notes for human review)
+- **CPL CSV** columns: `Designator, Mid X (mm), Mid Y (mm), Layer (T|B), Rotation`
+
+If a client uses an unusual format that the translator doesn't auto-detect, edit `~/.claude/skills/jlcpcb/scripts/translate_bom_pnp.py` to add the new column name to the `BOM_*_FIELDS` or `PNP_*_FIELDS` tuples. Then commit the improvement to rp1-home.
+
+### Discovery references
+
+- Memory entry: `~/.claude/projects/-mnt-netshare-git-geltech/memory/reference_jlcpcb_api.md` (geltech-specific notes)
+- Skill scripts: `~/.claude/skills/jlcpcb/scripts/translate_bom_pnp.py`
+- Library: `~/scripts/jlcpcb-api/jlcpcb_client.py` (importable)
+- CLI: `~/.local/bin/jlcpcb-cli` (wrapper) and `~/scripts/jlcpcb-api/jlcpcb_cli.py` (implementation)
+- Reference Python SDK (for endpoint discovery): https://github.com/i2cjak/jlcpcb_api
 
 ## Related Skills
 
