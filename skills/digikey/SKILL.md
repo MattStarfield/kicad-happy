@@ -168,6 +168,13 @@ Returns the full `Product` object with all parameters, pricing (including MyPric
 | `/products/v4/search/{pn}/substitutions` | GET | Substitute parts |
 | `/products/v4/search/{pn}/recommendedproducts` | GET | Recommended/associated parts |
 
+### Design-Time Health Check
+
+> Before selecting or committing a part, run the **design-session BOM health check** (`bom` skill →
+> "Design-Time BOM Health"; rp1-home `scripts/partsdb/bom-health.py`) — it surfaces EOL/NRND
+> lifecycle, stock, and price-break issues across the whole board from the MS atomic parts DB, so a
+> lifecycle or sourcing problem is caught at design time rather than at order time.
+
 ### Rate Limits
 
 Per-minute and daily quotas apply. HTTP 429 with `Retry-After` header on exceed.

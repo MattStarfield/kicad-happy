@@ -44,6 +44,26 @@ echo '{"R1": {"MPN": "RC0805FR-0710KL", "Manufacturer": "Yageo"}}' \
 python3 <skill-path>/scripts/sync_datasheet_urls.py path/to/schematic.kicad_sch --recursive --dry-run
 ```
 
+## Design-Time BOM Health (Standing Practice)
+
+Run the **design-session BOM health check** (rp1-home `scripts/partsdb/bom-health.py`, MS PCB
+Doctrine W4.3 / #1461) at placement time and again before ordering — catching an EOL/NRND part
+or a stock/price problem while changing course is still cheap is the whole point of checking early.
+
+```bash
+# read-only over the design + the atomic parts DB (#1451); zero network calls by default
+python3 ~/scripts/partsdb/bom-health.py path/to/design.kicad_sch --boards 5 --spares 2
+# opt-in refresh of stale/missing rows (--live spends the shared distributor quota; budget-guarded)
+python3 ~/scripts/partsdb/bom-health.py path/to/design.kicad_sch --live
+```
+
+Per part it reports stock vs the effective order qty, unit price @ qty, lifecycle (EOL/NRND head
+the report with DB drop-in alternates), sourcing-channel compliance, and the age of every snapshot
+datum; BOM lines with no DB row are reported as coverage gaps. It is **read-only** over the
+schematic and the Device Master Sheet (exit 0/1/2 advisory — W4 intelligence, not a lint gate).
+Durable snapshot refresh is a separate command, `scripts/partsdb/refresh-snapshots.py`. Doctrine:
+rp1-home `claudedocs/pcb-doctrine/bom-health-check.md`.
+
 ## Workflow
 
 Skip steps that don't apply. Common shortcuts:
