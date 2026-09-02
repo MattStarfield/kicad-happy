@@ -1,147 +1,249 @@
 # ⚡ kicad-happy
 
-**[Claude Code](https://docs.anthropic.com/en/docs/claude-code) skills for electronics design with KiCad.** Analyze schematics, review PCB layouts, download datasheets, source components, and prepare boards for fabrication — all from your terminal.
+[![CI](https://github.com/aklofas/kicad-happy/actions/workflows/ci.yml/badge.svg)](https://github.com/aklofas/kicad-happy/actions/workflows/ci.yml)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![Mentioned in Awesome KiCad](https://awesome.re/mentioned-badge.svg)](https://github.com/joanbono/awesome-kicad)
 
-> 🛠️ **Requires Claude Code** — Anthropic's agentic coding tool that lives in your terminal. Skills like these let you extend it into entirely new domains beyond software.
+AI-powered design review for KiCad. Analyzes schematics, PCB layouts, and Gerbers. Catches real bugs before you order boards.
 
-These skills turn Claude Code into a full-fledged electronics design assistant that understands your KiCad projects at a deep level: parses schematics and PCB layouts into structured data, cross-references component values against datasheets, detects common design errors, and walks you through the full prototype-to-production workflow.
+Works with **[Claude Code](https://docs.anthropic.com/en/docs/claude-code)**, **[OpenAI Codex](https://github.com/openai/codex)**, **[GitHub Copilot CLI](https://docs.github.com/en/copilot)**, **[Google Antigravity](https://antigravity.google)**, and **[opencode](https://github.com/sst/opencode)**, as a **GitHub Action** for automated PR reviews, or as standalone Python scripts you can run anywhere.
 
-## 📦 What's included
+These skills turn your AI coding agent into a full-fledged electronics design assistant that understands your KiCad projects at a deep level: parses schematics and PCB layouts into structured data, cross-references component values against datasheets, detects common design errors, and walks you through the full prototype-to-production workflow.
 
-| Skill         | What it does                                                                                                                                                |
-| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **kicad**     | ⚡ Parse and analyze KiCad schematics, PCB layouts, Gerbers, and PDF reference designs. Automated subcircuit detection, design review, DRC/ERC verification. |
-| **bom**       | 📋 Full BOM lifecycle — analyze, source, price, export tracking CSVs, generate per-supplier order files.                                                    |
-| **digikey**   | 🔎 Search DigiKey for components and download datasheets via API.                                                                                           |
-| **mouser**    | 🔎 Search Mouser for components and download datasheets.                                                                                                    |
-| **lcsc**      | 🔎 Search LCSC for components (production sourcing, JLCPCB parts library).                                                                                  |
-| **element14** | 🔎 Search Newark/Farnell/element14 for components (international sourcing, one API for three storefronts).                                                  |
-| **jlcpcb**    | 🏭 JLCPCB fabrication and assembly — design rules, BOM/CPL format, ordering workflow.                                                                       |
-| **pcbway**    | 🏭 PCBWay fabrication and assembly — turnkey assembly with MPN-based sourcing.                                                                              |
+## 🔬 What it looks like in practice
+
+Point your agent at a KiCad project and it does the rest — parses every schematic and PCB file, traces every net, computes every voltage, and tells you what's wrong before you spend money on boards.
+
+> "Analyze my KiCad project at `hardware/rev2/`"
+
+Here's a condensed example from an open-source robot controller board. The agent found all of this automatically:
+
+**It builds your power tree** — tracing every regulator from input to load, computing output voltages from feedback dividers:
+
+```
+VBUS (USB-C / battery input, fused)
+├── AP63357 buck (500kHz switching) → 5V
+│   └── Feedback: R8/R9 ratio=0.155 → Vout=3.87V
+│       Power dissipation: ~0.15W (85% efficiency assumed)
+└── RT9080-3.3 LDO → 3.3V
+    └── Decoupling: 16 caps, 10.8µF total
+```
+
+**It identifies every subcircuit** — not just passives, but the functional blocks and how they connect:
+
+| Subcircuit  | Details                                                                                       |
+| ----------- | --------------------------------------------------------------------------------------------- |
+| Motor drive | 9x P-MOSFET switches (DMG2305UX), transistor-driven H-bridges                                |
+| Filters     | RC signal conditioning at 16Hz, 169Hz, and 1.03kHz (input filtering and debounce)             |
+| Lighting    | WS2812B addressable LED chain on GPIO, 60mA estimated draw                                    |
+| Sensors     | Onboard sensor interface, crystal oscillator with load cap validation                         |
+| Protection  | ESD clamp on USB D+/D-, dual input fuses (0.75A signal, 2.5A motor)                          |
+
+**It audits every connector for ESD protection** — and flags the ones that are exposed:
+
+```
+ESD coverage: 19 connectors audited
+
+  USB-C:     ESD clamp on D+/D-  ✓ (partial — 13 signal pins per ground ⚠️)
+  Fuse F1:   2.5A motor input  ✓
+  Fuse F2:   0.75A signal input  ✓
+  ⚠️ 6-pin header:    no protection (exposed signals)
+  ⚠️ Motor outputs:   no protection (exposed to back-EMF)
+  ⚠️ Servo connectors: no protection (exposed signals)
+  ⚠️ Sensor port:     no protection
+  ... 19 of 19 connectors have coverage gaps
+```
+
+**It validates your passive networks** — computing actual circuit behavior from component values:
+
+| Detection | Components | Computed Value | What It Means |
+|-----------|-----------|---------------|---------------|
+| RC filter | R21/C31   | fc = 15.9 Hz  | Low-pass for slow analog signal |
+| RC filter | R1/C13    | fc = 169 Hz   | Debounce / noise rejection |
+| RC filter | R2/C14    | fc = 1.03 kHz | Signal conditioning |
+| Feedback  | R8/R9     | ratio = 0.155 | Buck converter output voltage set |
+| Divider   | R42/R43   | ratio = 0.500 | Voltage sensing (half) |
+| Crystal   | Y1        | CL = 14.0 pF  | Load cap status: ok (target: 18 pF, -22%) |
+
+**It suggests applicable certifications** — based on what it detects in the design:
+
+```
+Suggested certifications:
+  FCC Part 15 Subpart B (US) — unintentional radiator compliance
+  CISPR 32 / CE EMC Directive (EU) — EMC compliance for EU market
+```
+
+**It checks production readiness** — BOM lock status, connector ground distribution, decoupling adequacy:
+
+```
+BOM lock: 0% — no MPNs assigned (prototype stage)
+Decoupling: 5 rails, 34 caps total (132µF motor, 110µF logic, 10.8µF 3.3V)
+Connector ground: USB-C has 13:1 signal-to-ground ratio (recommended ≤3:1)
+```
+
+For complete examples with all sections, see:
+- [Example 1: Robot controller](example-report-1.md) — schematic + PCB + EMC + SPICE, 184 components
+- [Example 2: GNSS disciplined oscillator](example-report-2.md) — full workflow including datasheet sync, 296 components, 10 power rails, Ethernet + USB + SMA
+
+For the end-to-end walkthrough from S-expression parsing through signal detection and datasheet cross-referencing, see [How It Works](how-it-works.md).
 
 ## 🚀 Install
 
-The easiest way — just ask Claude Code:
+> [!TIP]
+> For detailed installation, upgrade, and troubleshooting guidance across all platforms, have your AI agent read [`install-guidance.md`](install-guidance.md). It covers platform-specific quirks, known bugs, workarounds, and OS-specific issues.
 
-> Clone https://github.com/aklofas/kicad-happy and install all the skills
+**Claude Code:**
 
-And keep up to date with the latest as we use our [test harness](https://github.com/aklofas/kicad-happy-testharness) to validate against a [corpus](https://github.com/aklofas/kicad-happy-testharness/blob/main/repos.md) of open source projects.
+```
+/plugin marketplace add aklofas/kicad-happy
+/plugin install kicad-happy@kicad-happy
+```
 
-> Claude, pull the latest changes for kicad-happy and update my skills
+> [!NOTE]
+> `/plugin update` may not detect new versions due to a [known Claude Code issue](https://github.com/anthropics/claude-code/issues/36317).
+> To get the latest version, clear the cache and reinstall:
+> ```
+> rm -rf ~/.claude/plugins/cache/kicad-happy ~/.claude/plugins/marketplaces/kicad-happy
+> /plugin marketplace add aklofas/kicad-happy
+> /plugin install kicad-happy@kicad-happy
+> ```
 
-Or do it manually:
+**OpenAI Codex:**
+
+Use Codex's built-in skill installer first:
+
+> "Use $skill-installer to install the kicad-happy skills from https://github.com/aklofas/kicad-happy"
+
+If you prefer a manual install, install the skills into `~/.codex/skills/`.
+
+**Google Antigravity CLI (`agy`) / Gemini:**
+
+Install directly from GitHub as an Antigravity plugin:
+
+```bash
+agy plugin install https://github.com/aklofas/kicad-happy.git
+```
+
+Or from a local checkout:
+
+```bash
+git clone https://github.com/aklofas/kicad-happy.git
+agy plugin install kicad-happy
+```
+
+Toggle when needed:
+
+```bash
+agy plugin disable kicad-happy   # Disable when not doing electronics review
+agy plugin enable kicad-happy    # Enable when working on KiCad projects
+```
+
+See [install-guidance.md](install-guidance.md#google-antigravity-cli-agy--gemini) for workspace-scope installs, slash commands, and upgrade notes.
+
+
+**opencode:**
 
 ```bash
 git clone https://github.com/aklofas/kicad-happy.git
 cd kicad-happy
+opencode
+```
 
-# Install all skills (symlinks into ~/.claude/skills/)
+The repo ships `.opencode/opencode.json`, which opencode auto-discovers and uses to load all 11 skills from `./skills/`. For global availability across all projects, see [install-guidance.md](install-guidance.md#opencode).
+
+<details>
+<summary><strong>Manual install & other platforms</strong></summary>
+
+**Claude Code (macOS / Linux):**
+
+```bash
+git clone https://github.com/aklofas/kicad-happy.git
+cd kicad-happy
 mkdir -p ~/.claude/skills
-for skill in kicad bom digikey mouser lcsc element14 jlcpcb pcbway; do
+for skill in kicad spice emc datasheets bom digikey mouser lcsc element14 jlcpcb pcbway; do
   ln -sf "$(pwd)/skills/$skill" ~/.claude/skills/$skill
 done
 ```
 
-You can also install individually — symlink any skill folder from `skills/` into `~/.claude/skills/`. For project-specific installs, use `.claude/skills/` in your project root instead.
+**OpenAI Codex — global install (macOS / Linux):**
 
-The **kicad** skill is the core — the others enhance it with sourcing, datasheets, and manufacturing workflows.
-
-### Optional dependencies
-
-The analysis scripts are pure Python 3 with no required dependencies. Optional extras:
-
-- `requests` — better datasheet downloads (handles HTTP/2, manufacturer anti-bot)
-- `playwright` — last-resort fallback for JS-heavy datasheet sites (Broadcom, Espressif)
-- `pdftotext` (poppler-utils) — better PDF text extraction for datasheet verification
-
-### API keys (optional)
-
-The distributor skills work best with API credentials, but none are strictly required — Claude falls back to web search for component lookups and datasheet downloads.
-
-> "Claude, help me set up API keys for the distributor skills"
-
-| Distributor   | Env variables                                | How to get                                                                                             |
-| ------------- | -------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| **DigiKey**   | `DIGIKEY_CLIENT_ID`, `DIGIKEY_CLIENT_SECRET` | [DigiKey API Portal](https://developer.digikey.com/) — register an app, get OAuth 2.0 credentials      |
-| **Mouser**    | `MOUSER_SEARCH_API_KEY`                      | My Mouser → APIs → register for Search API key                                                         |
-| **element14** | `ELEMENT14_API_KEY`                          | [element14 API Portal](https://partner.element14.com/) — one key covers Newark, Farnell, and element14 |
-| **LCSC**      | *none needed*                                | Uses the free [jlcsearch](https://jlcsearch.tscircuit.com/) community API                              |
-
-## 🔬 What it looks like in practice
-
-> "Analyze my KiCad project at `hardware/rev2/`"
-
-Claude runs the analysis scripts, reads datasheets, and produces a full design review. Here's a condensed example from a real project — a 6-layer BLDC motor controller (187 components):
-
-**Power tree** — every regulator traced from input to output, feedback dividers identified, output voltage computed:
-
-```
-V+ (10-54V motor bus, TVS protected)
-├── MAX17760 buck → +12V (feedback: 226k/16.2k, Vref=1.0V → Vout=14.95V)
-│   └── TPS629203 → +5V → TPS629203 → +3.3V
-├── DRV8353 gate driver (PVDD = V+ direct)
-└── 3-Phase Bridge: 6x FDMT80080DC (80V/80A)
-    └── 36x 4.7uF 100V bulk caps = 169.2uF
+```bash
+git clone https://github.com/aklofas/kicad-happy.git
+cd kicad-happy
+mkdir -p ~/.codex/skills
+for skill in kicad spice emc datasheets bom digikey mouser lcsc element14 jlcpcb pcbway; do
+  ln -sf "$(pwd)/skills/$skill" ~/.codex/skills/$skill
+done
 ```
 
-**Detected subcircuits** — found automatically from the schematic:
+**Windows PowerShell (Codex):**
 
-| Subcircuit  | Details                                                                                            |
-| ----------- | -------------------------------------------------------------------------------------------------- |
-| Motor drive | 6 FETs, gate driver, per-phase current sense (0.5mΩ), 3x matched RC filters (22Ω + 1nF = 7.23 MHz) |
-| Buses       | 2x SPI, CAN with 120Ω termination, RS-422 differential                                             |
-| Protection  | TVS on V+ input (51V standoff matches bus spec), ground domain separation with net ties            |
-| Sensing     | Battery voltage divider (100k/4.7k → 54V max reads as 2.43V), FET temp NTC                         |
-
-**PCB cross-reference** — the review covers layout too:
-
-```
-Board: 56.0 x 56.0 mm, 6-layer, 1.55mm stackup
-Routing: 100% complete, 0 unrouted nets
-
-Thermal pad vias:
-  Phase FETs: 21-85 vias per pad — good
-  STM32 QFN-48: 14 vias — WARNING (recommended: 16)
-  Inductor L2:   4 vias — INSUFFICIENT (recommended: 9)
+```powershell
+git clone https://github.com/aklofas/kicad-happy.git
+cd kicad-happy
+New-Item -ItemType Directory -Force "$HOME\.codex\skills" | Out-Null
+"kicad","spice","emc","datasheets","bom","digikey","mouser","lcsc","element14","jlcpcb","pcbway" | ForEach-Object {
+  New-Item -ItemType SymbolicLink -Path "$HOME\.codex\skills\$_" -Target "$(Get-Location)\skills\$_" -Force | Out-Null
+}
 ```
 
-**Issues found:**
+Note: Windows symlinks may require Developer Mode or elevated privileges.
 
-| Severity   | Issue                                                                                        |
-| ---------- | -------------------------------------------------------------------------------------------- |
-| WARNING    | Feedback divider computes to 14.95V, not 12V — Vref heuristic may be wrong, verify datasheet |
-| WARNING    | STM32 thermal pad has 14 vias (need 16) — elevated die temp under load                       |
-| WARNING    | Inductor L2 has 4 thermal vias (need 9) — carries the full +12V rail current                 |
-| SUGGESTION | No test point on V+ motor bus — add for bring-up measurements                                |
+</details>
 
-**What looks good:** 170µF bus capacitance across 38 caps, proper GND/GNDPWR domain separation, CAN bus termination verified, 100% MPN coverage across all components, zero DFM violations, JLCPCB standard tier compatible.
+The analysis scripts are **pure Python 3.10+** with zero required dependencies. No pip install, no Docker, no KiCad installation needed.
 
-For a complete example, see the [full design review](example-report.md) of an ESP32-S3 board — 52 components, 2-layer, dual boost converters, USB host, touch sensing.
+### Release candidates
 
-The analysis covers every domain in the design:
+The stable install commands above always resolve to the latest stable release on `main` (currently v2.1.0). When a release candidate is active, opt in by appending `#<tag>` to the marketplace ref:
 
-| Category          | Examples                                                                                           |
-| ----------------- | -------------------------------------------------------------------------------------------------- |
-| **Power**         | Regulator Vout computed from feedback dividers, power sequencing, enable chains, inrush analysis   |
-| **Analog**        | Op-amp gain computation, voltage dividers with ratios, RC/LC filter cutoff frequencies             |
-| **Protection**    | TVS/ESD mapping per interface, MOSFET switch gate drive analysis, flyback diode checks             |
-| **Digital**       | I2C pull-up verification, SPI/UART/CAN bus detection, differential pairs, level crossing analysis  |
-| **Motor/Power**   | H-bridge and 3-phase bridge detection, current sense shunts, gate driver mapping                   |
-| **RF**            | Signal chains, switch matrices, mixer/LNA/PA identification, balun detection                       |
-| **PCB**           | Thermal via adequacy, zone stitching density, trace width vs current, DFM checks, tombstoning risk |
-| **Manufacturing** | BOM consolidation opportunities, MPN coverage audit, assembly complexity scoring                   |
+**Claude Code:**
 
-### 📚 How the analysis works
+```
+/plugin marketplace add aklofas/kicad-happy#vX.Y.Z-rc.N
+/plugin install kicad-happy@kicad-happy
+```
 
-The analysis scripts parse KiCad's S-expression file format directly into structured JSON — component lists, net connectivity, detected subcircuits, board dimensions, DFM measurements. Claude then reads that JSON alongside your datasheets to cross-reference values, trace signal paths, and write a design review with every conclusion shown and verifiable. For the full end-to-end walkthrough from S-expression parsing through signal detection, datasheet cross-referencing, design review, and discussion of limitations — see **[How It Works](how-it-works.md)**. Detailed methodology documentation for each analyzer:
+This pins to the RC tag. Stable users on the un-suffixed marketplace are unaffected. To switch back to stable, remove the marketplace and re-add it without the `#` suffix.
 
-- **[Schematic analysis methodology](skills/kicad/scripts/methodology_schematic.md)** — parsing pipeline, multi-sheet net building, component classification heuristics, and all 21 signal path detectors (voltage dividers, regulators, RC/LC filters, op-amp circuits, transistor switches, protection devices, bridge circuits, bus detection, and more)
-- **[PCB layout analysis methodology](skills/kicad/scripts/methodology_pcb.md)** — footprint extraction, union-find connectivity, DFM scoring, thermal/placement/signal integrity analysis
-- **[Gerber analysis methodology](skills/kicad/scripts/methodology_gerbers.md)** — RS-274X and Excellon parsing, X2 attribute extraction, layer identification, completeness and alignment checks, zip archive staleness detection
+**Codex / Gemini CLI / opencode:** clone the repo and check out the RC tag before running the install above:
 
-### 🖐️ Ask about specific circuits
+```bash
+git clone https://github.com/aklofas/kicad-happy.git
+cd kicad-happy
+git checkout vX.Y.Z-rc.N
+# then run the symlink install for your agent
+```
 
-You don't have to ask for a full design review — just point Claude at whatever you're working on:
+> [!IMPORTANT]
+> Release candidates are pre-release builds intended for evaluation and feedback. They have passed the corpus regression gate and contract test suite but haven't completed extended manual validation. File issues on GitHub if you hit problems.
+
+## ⚙️ GitHub Action
+
+Also available as a **GitHub Action** for automated PR reviews. Every push and PR that touches KiCad files gets a commit status check and a structured review comment — power tree, SPICE results, EMC risk, thermal analysis, and more. Optionally chain with Claude for AI-powered natural-language reviews.
+
+See the **[GitHub Action setup guide](github-action.md)** for workflow examples, diff-based PR reviews, and AI-powered review configuration.
+
+## 📦 Skills
+
+| Skill         | What it does                                                                                                                                                                             |
+| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **kicad**     | ⚡ Parse and analyze KiCad schematics, PCB layouts, Gerbers, and PDF reference designs. Automated subcircuit detection, design review, DFM.                                               |
+| **spice**     | 🔬 SPICE simulation — generates testbenches for detected subcircuits, validates filter frequencies, opamp gains, divider ratios. Monte Carlo tolerance analysis. ngspice, LTspice, Xyce. |
+| **emc**       | 📡 EMC pre-compliance — 44 rule checks for radiated emission risks, PDN impedance, diff pair skew, ESD paths. FCC/CISPR/automotive/military.                                             |
+| **datasheets**| 📄 Extract structured specs from datasheet PDFs — pinouts, electrical characteristics, peripherals, topology. Per-MPN caching with quality scoring. Consumed by kicad/emc/spice/thermal. |
+| **bom**       | 📋 Full BOM lifecycle — analyze, source, price, export tracking CSVs, generate per-supplier order files.                                                                                 |
+| **digikey**   | 🔎 Search DigiKey for components and download datasheets via API.                                                                                                                        |
+| **mouser**    | 🔎 Search Mouser for components and download datasheets.                                                                                                                                 |
+| **lcsc**      | 🔎 Search LCSC for components (production sourcing, JLCPCB parts library).                                                                                                               |
+| **element14** | 🔎 Search Newark/Farnell/element14 (one API, three storefronts).                                                                                                                         |
+| **jlcpcb**    | 🏭 JLCPCB fabrication and assembly — design rules, BOM/CPL format, ordering workflow.                                                                                                    |
+| **pcbway**    | 🏭 PCBWay fabrication and assembly — turnkey with MPN-based sourcing.                                                                                                                    |
+
+## 🖐️ Ask about specific circuits
+
+You don't have to ask for a full design review — just point the agent at whatever you're working on:
 
 > "Check the two capacitive touch buttons on my PCB for routing or placement issues"
 
@@ -151,58 +253,114 @@ You don't have to ask for a full design review — just point Claude at whatever
 
 > "Are the differential pairs on my USB routed correctly?"
 
-Claude runs the analysis scripts, then autonomously digs deeper — tracing nets, analyzing zone fills, calculating clearances, reading datasheets.
+The agent runs the analysis scripts, then autonomously digs deeper — tracing nets, analyzing zone fills, calculating clearances, reading datasheets.
 
-### 📏 Standards compliance (IPC/IEC)
+## What the analysis covers
 
-For designs with high voltage (>50V), high current (>1A power traces), mains input, or safety isolation barriers, reviews automatically check against IPC-2221A conductor spacing and current capacity, IPC-4761 via protection, and ECMA-287/IEC 60664-1 creepage/clearance tables. It won't bother you about creepage on a 3.3V hobby board — standards checks kick in when they actually matter.
+| Domain            | What it checks                                                                                                                                                                                                 |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Power**         | Regulator Vout from feedback dividers (~65 Vref families), power sequencing, enable chains, inrush, sleep current                                                                                              |
+| **Analog**        | Opamp gain/bandwidth (per-part behavioral models), voltage dividers, RC/LC filters, crystal load caps                                                                                                          |
+| **Protection**    | TVS/ESD mapping, reverse polarity FETs, fuse sizing, clamping voltage                                                                                                                                          |
+| **Digital**       | I2C pull-up validation with rise time calculation, SPI CS counts, UART voltage domains, CAN termination                                                                                                        |
+| **Domain**        | RF chains, Ethernet, HDMI, memory, BMS, motor drivers, sensors, display/touch, audio, LED drivers, debug interfaces, and more (40 detectors total)                                                             |
+| **Derating**      | Capacitor voltage (ceramic 50%/electrolytic 80%), IC abs max, resistor power. Commercial/military/automotive profiles. Over-designed component detection.                                                      |
+| **PCB**           | Thermal via adequacy, zone stitching, trace width vs current, DFM scoring, impedance, proximity/crosstalk                                                                                                      |
+| **Manufacturing** | MPN coverage audit, JLCPCB/PCBWay format export, assembly complexity scoring                                                                                                                                   |
+| **Lifecycle**     | Component EOL/NRND/obsolescence alerts, temperature grade audit, alternative part suggestions                                                                                                                  |
+| **Thermal**       | Junction temperature estimation for LDOs, switching regulators, shunt resistors. Package Rθ_JA lookup, PCB thermal via correction, proximity warnings for caps near hotspots.                                  |
+| **EMC**           | Ground plane voids, decoupling, I/O filtering, switching harmonics, clock routing, diff pair skew, board edge radiation, PDN impedance, ESD paths, crosstalk, thermal derating. FCC/CISPR/automotive/military. |
 
-The reference tables are built from publicly available documents and secondary sources. Got official IPC/IEC PDFs collecting dust on a hard drive? Send them our way — safety standards shouldn't live behind a $200 paywall while engineers are out here trying to build things that don't catch fire.
+## 🔬 SPICE simulation
 
-### 📄 Sync datasheets for a project
+> "Sweep my LC matching network and show me where it actually resonates vs where I designed it"
 
-> "Sync the datasheets for my board at `hardware/rev2/`"
+> "What's the actual phase margin on my opamp filter stage with this TL072?"
+
+> "Run SPICE on everything the analyzer detected and tell me what doesn't look right"
+
+The **spice** skill goes beyond static analysis. It automatically generates SPICE testbenches for detected subcircuits — RC/LC filters, voltage dividers, opamp stages, feedback networks, transistor switches, crystal oscillators — runs them, and reports whether simulated behavior matches calculated values.
+
+For recognized opamps (~100 parts), it uses **per-part behavioral models** with the real GBW, slew rate, and output swing from distributor APIs or a built-in lookup table. When both schematic and PCB exist, it injects **PCB trace parasitics** into the simulation.
 
 ```
-Analyzing board.kicad_sch...
-Found 18 unique parts with MPNs (12 skipped without MPN)
-[1/14] STM32G474CEU6
-  Searching DigiKey...
-  OK: STM32G474CEU6_IC_MCU_32BIT_512KB_FLASH_UFQFPN-48.pdf (5,841,203 bytes) ✓ verified
-[2/14] DRV8353SRTAR
-  Trying schematic URL...
-  OK: DRV8353SRTAR_IC_GATE_DRIVER_3PHASE_WQFN-40.pdf (3,127,445 bytes) ✓ verified
-[3/14] TCAN1057AEV-Q1
-  Searching DigiKey...
-  OK: TCAN1057AEV-Q1_IC_CAN_TRANSCEIVER_5MBPS_SOIC-8.pdf (892,106 bytes) ✓ verified
-...
-Datasheet sync complete:
-  Downloaded: 14
-  Already present: 0
-  Failed: 0
-  Output: hardware/rev2/datasheets/
+Simulation: 14 pass, 1 warn, 0 fail
+  RC filter R5/C3 (fc=15.9kHz): confirmed, <0.3% error
+  Opamp U4A (inverting, gain=-10): 20.0dB confirmed
+    Bandwidth 98.8kHz (LM324 behavioral, GBW=1.0MHz)
+    Note: signal frequency should stay below 85kHz for <1dB gain error
 ```
 
-Creates a `datasheets/` directory with human-readable filenames and an `index.json` manifest. Subsequent runs only download new or changed parts. Each PDF is verified against the expected MPN. Claude then reads these datasheets during design review to validate component values against manufacturer recommendations.
+**Monte Carlo tolerance analysis** — run N simulations per subcircuit with randomized component values within tolerance bands. Shows which component dominates output variation:
 
-### 📋 BOM management — from schematic to order
+```
+Monte Carlo (N=100): RC filter R5/C3
+  fc: 15.9kHz ± 1.8kHz (3σ), spread 22.6%
+  Sensitivity: C3 (10%) contributes 68%, R5 (5%) contributes 32%
+```
+
+**What-if parameter sweep** — instantly see the impact of component changes without editing the schematic:
+
+```
+> "What happens if I change R5 from 10k to 4.7k?"
+
+  RC filter R5/C3: cutoff 1.59kHz → 3.39kHz (+112.8%)
+  Voltage divider R5/R6: ratio 0.32 → 0.50 (+56.4%)
+```
+
+Requires ngspice, LTspice, or Xyce (auto-detected). Without one, simulation is skipped — the rest of the analysis still works. For the full methodology — see **[SPICE Integration Guide](spice-integration.md)**.
+
+## 📡 EMC pre-compliance
+
+> "Will my board pass FCC Class B? Check for EMC issues."
+
+> "Analyze my switching regulator layout for EMI problems"
+
+> "Check my differential pairs for skew-induced common-mode radiation"
+
+The **emc** skill predicts the most common causes of EMC test failures — ground plane voids, insufficient decoupling, unfiltered I/O cables, switching regulator harmonics, differential pair skew, and more. It operates on the schematic and PCB analyzer output using geometric rule checks and analytical emission formulas (Ott, Paul, Bogatin). When ngspice is available, PDN impedance and EMI filter checks are SPICE-verified for higher accuracy — otherwise analytical models are used as fallback.
+
+```
+EMC risk score: 73/100
+  CRITICAL: 1 — SPI_CLK crosses ground plane void on In1.Cu
+  HIGH:     2 — USB diff pair 5.2mm skew (exceeds 25ps limit),
+                no ground via near TVS U5
+  MEDIUM:   3 — decoupling cap 7mm from U3, clock on outer layer,
+                via stitching gap near J2
+  INFO:     4 — cavity resonance at 715 MHz, switching harmonics
+                in 30-88 MHz band
+
+Pre-compliance test plan:
+  Focus band: 30-88 MHz (12 switching harmonics from U1, U4)
+  Highest risk interface: J1 (USB-C, unfiltered, 480 Mbps)
+  Probe points: L1 (45.2, 32.1)mm, Y1 (62.0, 18.5)mm
+```
+
+44 rule checks across power integrity, signal integrity, and radiation. Includes full-board PDN impedance with power tree analysis — traces impedance from regulator output through PCB traces to IC load points, and detects cross-rail coupling when a downstream switching regulator injects transients onto the upstream rail. Supports FCC, CISPR, automotive (CISPR 25), and military (MIL-STD-461G) standards. Generates a pre-compliance test plan with frequency band priorities, interface risk rankings, and near-field probe points. For the full methodology — see **[EMC Pre-Compliance Guide](emc-precompliance.md)**.
+
+## 📄 Datasheets — sync and extract
+
+> "Sync datasheets for my board at `hardware/rev2/`"
+
+> "What's the EN-pin threshold on the LDO I'm using?"
+
+Datasheets flow through kicad-happy in two stages:
+
+**Sync (download).** Pulls PDFs for every component with an MPN from DigiKey, LCSC, element14, or Mouser into a local `datasheets/` directory. 96% success rate across 240+ manufacturers. Each PDF is verified against the expected part number.
+
+**Extract (parse).** The **datasheets** skill turns those PDFs into structured JSON — pinouts, voltage ratings, electrical characteristics, peripherals, topology, SPICE model coefficients. Extractions are cached per-MPN under `<project>/datasheets/extracted/` and scored on a five-dimension quality rubric. Analyzer skills (`kicad`, `emc`, `spice`, `thermal`) consume the cache through a shared helper API with trust gates — so a schematic finding tagged `confidence: datasheet-backed` means a scored extraction produced the underlying fact, not a keyword match on the part number.
+
+For the full pipeline — page selection, the quality rubric, the consumer API, and what it deliberately doesn't do — see **[Datasheet Extraction Guide](datasheet-extraction.md)**.
+
+## 📋 BOM management — from schematic to order
 
 > "Source all the parts for my board, I'm building 5 prototypes"
 
-This is where things get *really* good. The BOM skill manages the entire lifecycle of your bill of materials — and it all lives in your KiCad schematic as the single source of truth. No separate spreadsheets to keep in sync, no copy-pasting between tabs.
+The BOM skill manages the full lifecycle of your bill of materials — using your KiCad schematic as the single source of truth. No separate spreadsheets to keep in sync, no copy-pasting between tabs.
 
-Claude analyzes your schematic to detect which distributor fields are populated (and which naming convention you're using — it handles dozens of variants like `Digi-Key_PN`, `DigiKey Part Number`, `DK`, etc.), identifies gaps, searches distributors to fill them, validates every match against the footprint and specs, and exports per-supplier order files in the exact upload format each distributor expects.
-
-**The workflow:**
-
-1. **Analyze** — scans your schematic for existing part numbers, detects the naming convention, identifies gaps
-2. **Sync datasheets** — downloads PDFs for every MPN into a local `datasheets/` directory (DigiKey, LCSC, element14, and Mouser all supported)
-3. **Source** — searches distributors by MPN, fills in missing part numbers, validates package/specs match
-4. **Export** — generates a tracking CSV and per-supplier order files with quantities computed for your board count + spares
+The agent analyzes your schematic to detect which distributor fields are populated (and which naming convention you're using — it handles dozens of variants like `Digi-Key_PN`, `DigiKey Part Number`, `DK`, etc.), identifies gaps, searches distributors to fill them, validates every match, and exports per-supplier order files in the exact upload format each distributor expects.
 
 > "I need a 3.3V LDO that can do 500mA in SOT-223, under $1"
-
-Claude searches DigiKey via API, filters by your specs, and returns pricing and stock:
 
 ```
 AZ1117CH-3.3TRG1 — Arizona Microdevices
@@ -216,68 +374,119 @@ AP2114H-3.3TRG1 — Diodes Incorporated
   In stock: 42,000+
 ```
 
-Pick one, and Claude searches Mouser and LCSC for the same MPN to fill in alternate suppliers. One prompt, all suppliers populated, ready for your tracking CSV.
+## 🏭 Manufacturing
 
-### 🏭 Prepare for manufacturing
+> "Is this board ready to order?"
 
 > "Generate the BOM for JLCPCB assembly"
 
-Claude extracts the BOM from your schematic, cross-references LCSC part numbers, formats it to JLCPCB's exact spec, and flags basic vs extended parts. CPL files are exported from KiCad directly — Claude handles the BOM side.
+**Fab release gate** — an automated pre-order checklist that cross-references your schematic, PCB, and Gerber data:
 
-> "Generate order files for 10 boards with 2 spares per line"
+```
+Fabrication Release Gate — 8 check categories
 
-Claude exports per-supplier upload files — DigiKey bulk-add CSV, Mouser cart format, LCSC BOM — with quantities already computed. It'll flag any parts where your chosen supplier is out of stock and suggest the alternate.
+  Routing completeness     ✓ PASS  All 240 nets routed
+  BOM readiness            ⚠ WARN  3 components missing MPN
+  DFM compliance           ✓ PASS  No spacing violations, standard tier compatible
+  Documentation            ✓ PASS  Title block, revision, fab notes present
+  Schematic ↔ PCB match    ✓ PASS  296 components matched, 0 orphans
+  Gerber verification      ✓ PASS  All layers present, drill file valid
+  Thermal analysis         ⚠ WARN  U3 junction temp 92°C (margin: 18°C)
+  EMC pre-compliance       ⚠ WARN  Score 73/100 — 2 HIGH findings
 
-## 🗺️ Workflow overview
+  Result: CONDITIONAL PASS (3 warnings to review before ordering)
+```
 
-1. **Design** your board in KiCad
-2. **Sync datasheets** for all components — builds a local library Claude uses for validation
-3. **Analyze** the schematic and PCB with the analysis scripts
-4. **Review** the design — Claude cross-references the analysis with datasheets
-5. **Source components** — search DigiKey/Mouser (prototype) or LCSC (production)
-6. **Export** BOM tracking CSV + per-supplier order files + CPL for your assembler
-7. **Order** boards from JLCPCB or PCBWay
+**BOM export** — cross-references LCSC part numbers, formats to JLCPCB's exact spec, flags basic vs extended parts. Per-supplier upload files — DigiKey bulk-add CSV, Mouser cart format, LCSC BOM — with quantities already computed for your board count + spares.
 
-## 🧪 Test harness
+## 🗺️ Workflow
 
-The analyzers are validated against **1,000+ open-source projects** across 25 categories using a [dedicated test harness](https://github.com/aklofas/kicad-happy-testharness) that runs every analyzer against the full corpus on each change and catches regressions automatically.
+1. **Design** your schematic and lay out the PCB in KiCad
+2. **Sync datasheets** — the agent downloads PDFs and extracts structured specs for every MPN
+3. **Design review** — the agent runs schematic, PCB, cross-analysis, EMC, SPICE, and thermal analyzers, cross-references against datasheets, and writes a structured report with findings ranked by severity
+4. **Iterate** — fix issues, re-run the review, compare against the previous run with built-in diff analysis
+5. **Source** components from DigiKey/Mouser (prototype) or LCSC (production)
+6. **Export** BOM + per-supplier order files for your assembler
+7. **Order** from JLCPCB or PCBWay with generated BOM/CPL files
 
-**Three-layer regression testing:**
+Or set up the [GitHub Action](github-action.md) and get automated analysis on every PR.
 
-| Layer          | What it catches                           | How                                                                                     |
-| -------------- | ----------------------------------------- | --------------------------------------------------------------------------------------- |
-| **Baselines**  | Output drift between analyzer versions    | Snapshot/diff of JSON outputs across the full corpus                                    |
-| **Assertions** | Hard regressions on known-good results    | Machine-checkable facts per file (component counts, detected subcircuits, signal paths) |
-| **LLM review** | Semantic issues deterministic checks miss | Claude reviews source + output pairs, findings get promoted to assertions               |
+## Optional setup
 
-**What gets tested:** All three analyzers (schematic, PCB, Gerber) against every file in the corpus, MPN extraction and validation across all four distributor APIs, the datasheet download pipeline, the BOM manager end-to-end, and legacy KiCad 5 format support.
+**SPICE simulator** (for the spice skill): `apt install ngspice` or LTspice or Xyce. Auto-detected.
 
-## 🎨 Why KiCad?
+**API keys** (for distributor skills — falls back to web search without them):
 
-This project exists because **KiCad is absolutely incredible** — and we're not being subtle about it. It is, hands down, the best EDA tool available today. Fully open-source, cross-platform, backed by CERN, with a community that ships features faster than most commercial tools. It's used everywhere from weekend hobby projects to production hardware at real companies. And it's *free*. In 2026. While Altium charges you $10K/year. Unreal. 🎉
+| Service   | Env variable                                 | Notes                                                   |
+| --------- | -------------------------------------------- | ------------------------------------------------------- |
+| DigiKey   | `DIGIKEY_CLIENT_ID`, `DIGIKEY_CLIENT_SECRET` | [developer.digikey.com](https://developer.digikey.com/) |
+| Mouser    | `MOUSER_SEARCH_API_KEY`                      | My Mouser → APIs                                        |
+| element14 | `ELEMENT14_API_KEY`                          | [partner.element14.com](https://partner.element14.com/) |
+| LCSC      | *none*                                       | Free community API                                      |
 
-But what makes KiCad truly special for AI-assisted design — and the entire reason this project can exist — is its **beautifully open file format**. Every schematic, PCB layout, symbol, and footprint is stored as clean, human-readable S-expressions. No proprietary binary blobs. No vendor lock-in. No reverse engineering. No $500 "export plugin" just to read your own data.
-
-This means Claude can read your KiCad files directly, understand every component, trace every net, and reason about your design at the same level a human engineer would. The analysis scripts parse raw `.kicad_sch` and `.kicad_pcb` files into structured JSON, and Claude takes it from there — cross-referencing datasheets, computing filter cutoffs, checking thermal via adequacy, flagging missing pull-ups. No plugins, no export steps, no intermediary formats. Just your KiCad project and a terminal.
-
-Try doing that with Altium or OrCAD. 😉
-
-KiCad + Claude Code is the most powerful electronics design workflow you can set up today, and it costs exactly $0 for the EDA tool. The future of hardware design is open, and it's here.
+**Optional Python packages**: `requests` (better HTTP), `playwright` (JS-heavy datasheet sites), `pdftotext` (PDF text extraction).
 
 ## ✅ KiCad version support
 
-| Version | Schematic                     | PCB  | Gerber |
-| ------- | ----------------------------- | ---- | ------ |
-| KiCad 9 | Full                          | Full | Full   |
-| KiCad 8 | Full                          | Full | Full   |
-| KiCad 7 | Full                          | Full | Full   |
-| KiCad 6 | Full                          | Full | Full   |
-| KiCad 5 | Full (legacy `.sch` + `.lib`) | Full | Full   |
+| Version  | Schematic                     | PCB  | Gerber |
+| -------- | ----------------------------- | ---- | ------ |
+| KiCad 10 | Full                          | Full | Full   |
+| KiCad 9  | Full                          | Full | Full   |
+| KiCad 8  | Full                          | Full | Full   |
+| KiCad 7  | Full                          | Full | Full   |
+| KiCad 6  | Full                          | Full | Full   |
+| KiCad 5  | Full (legacy `.sch` + `.lib`) | Full | Full   |
+
+## 🎯 Release notes
+
+**Current release: v2.2.1 — maintenance batch.** Twenty-five verified fixes: the GP-001 via-antipad and power-rail-classification false positives from the field are gone, no-connect markers no longer absorb pins into wires passing beneath them (community-contributed, `kicad-cli`-verified), internal-oscillator IC descriptions stop triggering false clock findings, and a whole class of output nondeterminism was eliminated with a CI guard to keep it that way. Skipped or degraded analysis is now visible (`checks_run` manifest, connectivity-error notes, conditional-rule skip counts). Upgrading: GitHub Action users with multi-project repos must set the `schematic`/`pcb` inputs explicitly (auto-detect now fails loudly instead of guessing), and `analyze_pcb.py --schematic analysis/schematic.json` now classifies your declared power rails correctly.
+
+Per-release stories are in [release-notes.md](release-notes.md); line-level detail in the [CHANGELOG](CHANGELOG.md).
+
+## 🧪 Test harness
+
+Everything above was validated against a [corpus of 5,800+ open-source KiCad projects](https://github.com/aklofas/kicad-happy-testharness) — the kind of designs real engineers actually build. The corpus spans hobby boards, production hardware, motor controllers, RF frontends, battery management systems, IoT devices, audio amplifiers, and everything in between. KiCad 5 through 10. Single-sheet and multi-sheet hierarchical. 2-layer through 6-layer. For full methodology and reproducibility instructions, see [VALIDATION.md](VALIDATION.md).
+
+**The numbers:**
+
+| Metric                       | Value                                        |
+| ---------------------------- | -------------------------------------------- |
+| Repos in corpus              | 5,800+                                       |
+| Schematic files analyzed     | 6,845 (100% success)                         |
+| PCB files analyzed           | 3,498 (99.9%)                                |
+| Gerber directories analyzed  | 1,050 (100% success)                         |
+| EMC pre-compliance analyses  | 6,853 (100% success, 141K+ findings)         |
+| Components parsed            | 312,956                                      |
+| Nets traced                  | 531,418                                      |
+| SPICE subcircuit simulations | 30,646 across 17 types                       |
+| SPICE-verified EMC findings  | 169 (PDN impedance via ngspice)              |
+| Regression assertions        | 808K+ at 100% pass rate                      |
+| Equations tracked & verified | 86 with source citations                     |
+| Bugfix regression guards     | 67 (100% pass — no fixed bugs have returned) |
+| Closed analyzer issues       | 193                                          |
+
+Three-layer regression testing catches drift at every level:
+
+| Layer          | What it catches                                                                                   |
+| -------------- | ------------------------------------------------------------------------------------------------- |
+| **Baselines**  | Output drift between analyzer versions                                                            |
+| **Assertions** | Hard regressions on known-good results (component counts, detected subcircuits, signal paths)     |
+| **LLM review** | Semantic issues deterministic checks miss — findings get promoted to machine-checkable assertions |
+
+## 🎨 Why KiCad?
+
+This project exists because **KiCad is absolutely incredible**. Fully open-source, cross-platform, backed by CERN, with a community that ships features faster than most commercial tools. It's used everywhere from weekend hobby projects to production hardware at real companies.
+
+But what makes KiCad truly special for AI-assisted design — and the entire reason this project can exist — is its **beautifully open file format**. Every schematic, PCB layout, symbol, and footprint is stored as clean, human-readable S-expressions. No proprietary binary blobs. No vendor lock-in. No $500 "export plugin" just to read your own data.
+
+This means your AI agent can read your KiCad files directly, understand every component, trace every net, and reason about your design at the same level a human engineer would. No KiCad export plugins, no export steps, no intermediary formats. Just your KiCad project and a terminal.
+
+Try doing that with Altium or OrCAD. 😉
 
 ## 📜 License
 
-MIT
+MIT — see [CHANGELOG.md](CHANGELOG.md) for release history and [CONTRIBUTING.md](CONTRIBUTING.md) for development guidelines.
 
 ---
 
-*This project — including the analysis scripts, skills, and this README — was built entirely with [Claude Code](https://docs.anthropic.com/en/docs/claude-code).* 🤖
+*Built with [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and [OpenAI Codex](https://github.com/openai/codex).* 🤖

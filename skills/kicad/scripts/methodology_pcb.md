@@ -43,7 +43,9 @@ Extracts from `(setup ...)` block:
 
 ### 2.3 Net Definitions
 
-Extracts `(net N "name")` entries — maps net numbers to names. Net numbers are used throughout the file to identify which net a pad, track, via, or zone belongs to.
+KiCad ≤9: Extracts `(net N "name")` entries — maps net numbers to names. Net numbers are used throughout the file to identify which net a pad, track, via, or zone belongs to.
+
+KiCad 10: No net declarations section. Nets are identified by name strings directly in pads, tracks, vias, and zones. The analyzer builds a synthetic integer mapping from all unique net names for internal use.
 
 ### 2.4 Footprint Extraction
 
@@ -72,7 +74,7 @@ Each `(footprint ...)` or `(module ...)` block produces:
 - Pad number, type (`smd`, `thru_hole`, `np_thru_hole`), shape (`circle`, `rect`, `oval`, `roundrect`, `custom`)
 - Absolute position (footprint-relative position rotated by footprint angle, then translated)
 - Size (width, height), drill diameter and shape (round vs. oval)
-- Net assignment (net number + name)
+- Net assignment (KiCad ≤9: net number + name; KiCad 10: net name only)
 - Layer list (which copper/mask/paste layers the pad spans)
 - Pin function and type (from schematic cross-reference: `pinfunction`, `pintype`)
 - Custom pad copper area estimation (from primitives)
@@ -86,7 +88,7 @@ Each `(footprint ...)` or `(module ...)` block produces:
 ### 2.5 Track Extraction
 
 Extracts `(segment ...)` and `(arc ...)` blocks:
-- Start/end coordinates, width, layer, net number
+- Start/end coordinates, width, layer, net
 - For arcs: start, mid, and end points (3-point arc definition)
 - Width distribution histogram
 - Layer distribution histogram
@@ -95,7 +97,7 @@ Extracts `(segment ...)` and `(arc ...)` blocks:
 ### 2.6 Via Extraction
 
 Extracts `(via ...)` blocks:
-- Position, pad size, drill diameter, net number
+- Position, pad size, drill diameter, net
 - Layer span (e.g., `F.Cu` to `B.Cu` for through-hole, or specific layers for blind/micro vias)
 - Via type: through, blind, or micro
 - Tenting status (solder mask coverage)
@@ -413,6 +415,11 @@ Legacy KiCad 5 net class definitions (stored in PCB file): default and named cla
 
 ```json
 {
+    "analyzer_type": "pcb",
+    "summary": { "total_findings": 42, "by_severity": { "error": 2, "warning": 15, "info": 25 } },
+    "findings": [{ "detector", "rule_id", "category", "severity", "confidence",
+                    "summary", "description", "components", "nets", "recommendation",
+                    "report_context": { "section", "impact", "standard_ref" }, ... }],
     "file": "path/to/board.kicad_pcb",
     "kicad_version": "9.0.0",
     "statistics": { "footprint_count", "smd_count", "tht_count", "copper_layers_used",
@@ -428,23 +435,22 @@ Legacy KiCad 5 net class definitions (stored in PCB file): default and named cla
     "vias": { "count", "size_distribution", "via_analysis": { "type_breakdown", "annular_ring",
               "via_in_pad", "fanout_patterns", "current_capacity" } },
     "zones": [...],
-    "connectivity": { "fully_routed", "unrouted", "partially_routed", "routing_complete" },
+    "connectivity": { "fully_routed", "partially_routed", "routing_complete" },
     "net_lengths": [{ "net", "total_length_mm", "layers", "via_count" }],
     "power_net_routing": [...],
     "decoupling_placement": [...],
     "ground_domains": { "domains", "multi_domain_components" },
-    "current_capacity": { "power_ground_nets", "narrow_signal_nets" },
-    "thermal_analysis": { "zone_stitching", "thermal_pads" },
     "layer_transitions": [...],
-    "placement_analysis": { "courtyard_overlaps", "edge_clearance_warnings", "density" },
     "silkscreen": { "board_texts", "refs_visible", "hidden_refs", "documentation_warnings" },
     "board_metadata": { "title", "rev", "date", ... },
-    "dfm": { "dfm_tier", "metrics", "violations" },
-    "tombstoning_risk": [...],
-    "thermal_pad_vias": [...],
-    "copper_presence": [...]
+    "dfm_summary": { "dfm_tier", "metrics", "violation_count", "ipc_class_compliance" },
+    "placement_density": { ... },
+    "copper_presence_summary": { ... },
+    "board_thickness_mm": 1.6
 }
 ```
+
+Sections previously at top level (`thermal_analysis`, `thermal_pad_vias`, `tombstoning_risk`, `placement_analysis`, `current_capacity`, `copper_presence`, `dfm`) are now flattened into `findings[]`. Summary data is preserved in `dfm_summary`, `placement_density`, `copper_presence_summary`, and `board_thickness_mm`.
 
 ---
 

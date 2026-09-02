@@ -30,6 +30,8 @@ PCBWay is a PCB fabrication and assembly service based in Shenzhen, China. It is
 | `mouser` | Search Mouser (prototype sourcing, secondary) |
 | `lcsc` | Search LCSC (production sourcing, JLCPCB parts) |
 | `jlcpcb` | JLCPCB PCB fabrication & assembly (primary alternative) |
+| `emc` | EMC pre-compliance risk analysis — run before fab to catch EMC issues |
+| `spice` | SPICE simulation — verify analog subcircuits before committing to fab |
 
 ## Key Differences from JLCPCB
 
@@ -38,13 +40,17 @@ PCBWay is a PCB fabrication and assembly service based in Shenzhen, China. It is
 | Component sourcing | Turnkey (PCBWay sources by MPN) | LCSC parts library (you provide LCSC PNs) |
 | Parts library | No fixed library — sources globally | LCSC library (basic/extended parts) |
 | Assembly fee model | Quote-based per project | Per-part fees (basic free, extended $3 each) |
+| Pricing turnaround | **Manual quote, 1–2 business days** | Instant online pricing |
 | BOM format | MPN-based (manufacturer part numbers) | LCSC PN-based |
+
+> **Plan around manual quoting.** PCBWay assembly requires a human-reviewed quote before you can place the order — typically 1-2 business days after uploading files. JLCPCB shows assembly pricing instantly at checkout. If you're prototyping and need to iterate quickly, the JLCPCB feedback loop is much tighter. PCBWay's value is in sourcing parts JLCPCB can't, not in turnaround speed.
 
 **When to use PCBWay over JLCPCB:**
 - Parts not available on LCSC — PCBWay sources globally by MPN
 - Need turnkey sourcing — provide MPNs, PCBWay handles procurement
 - Prefer quote-based pricing over per-part fee model
 - Need consigned/kitted assembly (you ship parts to PCBWay)
+- Timeline allows for the manual-quote turnaround
 
 ## Assembly Options
 

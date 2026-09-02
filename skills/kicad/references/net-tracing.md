@@ -47,7 +47,7 @@ Example: Resistor at (152.4, 176.53) rotated 90 deg, pin 1 at relative (0, 3.81)
 
 Large IC symbols (e.g., ESP32 modules) have pins on the left **and** right sides. Two different pins can share the same Y-coordinate but have very different X-coordinates. A `no_connect` or wire at `(91.44, 77.47)` is NOT the same pin as a wire endpoint at `(60.96, 77.47)` — they are on opposite sides of the symbol.
 
-**Always verify BOTH X and Y** when matching coordinates. To determine which side a pin exits from:
+**Always verify BOTH X and Y** when matching coordinates. Use exact floating-point comparison — KiCad stores coordinates with nanometer precision internally, and properly connected elements share the exact same coordinate values. If you see any difference (even 0.001mm), the coordinates are NOT the same point; they indicate a wiring error or coordinate transform bug. To determine which side a pin exits from:
 1. Find the pin's relative offset in the `lib_symbols` definition — negative X = left side, positive X = right side
 2. Apply the symbol's placement transform to get the absolute position
 3. Match against wires/labels/no_connects using the **exact** (X, Y) pair
@@ -97,6 +97,66 @@ When a component is removed from a schematic (e.g., R13 was a GPIO pullup), its 
 
 ### Connector naming conventions
 Not all "programming" connectors are JTAG. A 2x3 header (J2) with TX, RX, GND, 3V3, EN, and BOOT pins is a **serial programming header** (UART), not a JTAG header. JTAG requires TCK, TMS, TDI, TDO signals. Check the actual pin assignments before labeling a connector.
+
+## Multi-Unit Symbols
+
+Components like LM324 (4 opamps), CD4066 (4 switches), or STM32 (multi-bank pin assignments) contain multiple units in one package. Each unit is a separate `_U_1` / `_U_2` / etc. sub-symbol in the `lib_symbols` section. When tracing nets:
+
+1. **Identify which unit is placed** — the placed symbol's `lib_id` suffix (e.g., `LM324_1_1` = unit 1) tells you which sub-symbol provides the pin offsets
+2. **Each unit has its own pin set** — unit 1 of an LM324 has pins 1/2/3 (IN+/IN-/OUT), unit 2 has pins 5/6/7, etc. Power pins (VCC/GND) are typically in a shared sub-symbol `_0_1`
+3. **Power pins may not be placed** — the `_0_1` sub-symbol with VCC/GND is often placed on only one instance (or a dedicated power sheet). Don't flag missing power connections on other units — check if any unit of the same component has them connected
+4. **Reference designator is shared** — all units share the same reference (e.g., U1A, U1B, U1C, U1D are all U1). The analyzer reports them as separate symbol instances with the same `reference` field
+
+To find all units of a component: search for placed symbols where the `lib_id` base name matches (ignoring the `_U_V` suffix) and the `reference` property is the same.
+
+## Hierarchical buses
+
+Bus connectivity (GH #25) is resolved by a dedicated per-sheet bus graph,
+separate from the point-to-point tracing above.
+
+- **Expansion.** Vectors (`D[0..7]` -> D0..D7) and groups (`{TX RX}` -> TX,
+  RX) expand to an ordered member list; group members may themselves be
+  project bus aliases, expanded recursively. `~{...}`/`_{...}`/`^{...}`
+  markup around a bus distributes over each member; markup around a
+  non-bus name (`~{OE}`) is not a bus.
+- **Member attachment.** A member net joins its bus via an unlabelled
+  bus-entry tap, or a same-sheet member label matching the bus's own
+  member naming.
+- **Sheet pins.** A parent bus reaching a child sheet's pin maps onto the
+  child's hierarchical-label bus positionally, per instance — never by
+  matching bare bus names across instances.
+- **Hier/local join.** A genuine (non-sheet-pin) hierarchical label joins
+  same-name local labels on its own sheet into one net; a sheet-pin label
+  does not — its bare name belongs to the child and repeats per instance.
+- **Naming.** A resolved member net is named from the parent (lowest sheet) label.
+- **Qualified keys.** Bare-name collisions across sheet scopes use the
+  `/<sheet>/<name>` key (KH-359), same as any other net.
+- **Unresolved.** `bus_topology.unresolved` (`[{reason, name}]`) lists
+  every bus construct the resolver could not confidently resolve — those
+  connections are not asserted. `reason` is one of a fixed snake_case
+  vocabulary (`name` carries the associated label/alias/sheet-pin name, or
+  for `ambiguous_bus_width` the ambiguous width as a string; identical
+  `{reason, name}` pairs are deduplicated within the bus-graph resolution
+  notes; port-matching notes may repeat for genuinely distinct occurrences):
+  - `entry_both_ends_on_bus` — a bus-entry tap lands on a bus wire at
+    both ends (neither end is the wire side).
+  - `entry_off_bus` — a bus-entry tap touches no bus wire at either end.
+  - `label_not_on_bus_wire` — a bus-name label (local/hier/pin) isn't
+    positioned on any bus wire segment.
+  - `unlabeled_entry_tap` — a bus-entry tap's net carries no label at all.
+  - `entry_tap_name_not_in_bus` — a bus-entry tap's net carries a label,
+    but its name doesn't match any member of the tapped bus (distinct
+    from `unlabeled_entry_tap`: the tap has a label, just not a member one).
+  - `ambiguous_bus_width` — a cluster carries two different same-width
+    bus-label expansions, so there's no single canonical member ordering.
+  - `duplicate_hier_port` — two hierarchical-label ports share the same
+    (namespace, name) key on one sheet (malformed sheet).
+  - `no_hier_counterpart_for_pin` — a sheet-pin bus port has no matching
+    hierarchical-label port on the child sheet.
+  - `no_pin_counterpart_for_hier` — a hierarchical-label bus port has no
+    matching sheet-pin port on the parent sheet.
+  - `bus_width_mismatch` — a matched sheet-pin/hier-label port pair
+    expand to different member counts.
 
 ## Complete Example
 

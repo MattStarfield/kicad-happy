@@ -19,12 +19,21 @@ Usage:
 """
 
 import json
+import os
 import re
 import sys
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from envelopes.gerber import GerberEnvelope  # noqa: E402
+from schema_codec import emit_schema  # noqa: E402
+from inputs_builder import build_inputs, build_compat  # noqa: E402
+from capability_mode import get_capability_mode_ref  # noqa: E402
+
+ANALYZER_SOURCE = "gerber"
 
 _POWER_KEYWORDS_GERBER = {"vcc", "vdd", "gnd", "agnd", "dgnd", "gndref",
                           "vss", "avdd", "dvdd", "vbat", "vbus", "vin"}
@@ -99,6 +108,8 @@ def parse_gerber(path: str) -> dict:
     # Aperture function tracking (TA precedes AD, TD clears)
     pending_aper_function = None
     aperture_functions = {}     # D-code -> function string
+    current_aperture = None             # currently selected D-code
+    aperture_flash_counts = {}          # D-code -> flash instance count
 
     # X2 object attribute state
     current_component = None
@@ -106,6 +117,8 @@ def parse_gerber(path: str) -> dict:
     component_pads = {}         # ref -> pad flash count
     component_nets = {}         # ref -> set of net names
     net_names = set()
+    net_draw_counts = {}        # net_name -> draw count (D01 operations)
+    net_flash_counts = {}       # net_name -> flash count (D03 operations)
     pin_mappings = []           # [{ref, pin, pin_name, net}]
 
     # Aperture dimension tracking for trace width / min feature analysis
@@ -142,9 +155,11 @@ def parse_gerber(path: str) -> dict:
                 }
             continue
 
-        # -- Clear attributes (TD) --
+        # -- Clear attributes (TD) — per X2 spec, clears ALL object attributes --
         if s == "%TD*%":
             pending_aper_function = None
+            current_component = None
+            current_net = None
             continue
 
         # -- Object attributes (TO) — component, net, pin --
@@ -183,13 +198,24 @@ def parse_gerber(path: str) -> dict:
         if s == "G36*":
             result["region_count"] += 1
 
+        # -- Aperture selection (Dnn* where nn >= 10) --
+        ap_sel = re.match(r"^(D[1-9]\d+)\*$", s)
+        if ap_sel:
+            current_aperture = ap_sel.group(1)
+
         # -- Operations: flash (D03), draw (D01) --
         if "D03" in s:
             result["flash_count"] += 1
+            if current_aperture:
+                aperture_flash_counts[current_aperture] = aperture_flash_counts.get(current_aperture, 0) + 1
             if current_component and current_component in component_pads:
                 component_pads[current_component] += 1
+            if current_net:
+                net_flash_counts[current_net] = net_flash_counts.get(current_net, 0) + 1
         elif "D01" in s:
             result["draw_count"] += 1
+            if current_net:
+                net_draw_counts[current_net] = net_draw_counts.get(current_net, 0) + 1
 
         # -- Coordinate extraction --
         cm = re.match(r"X(-?\d+)Y(-?\d+)", s)
@@ -213,12 +239,25 @@ def parse_gerber(path: str) -> dict:
     # --- Build X2 object summary ---
     has_x2_objects = bool(component_pads or net_names or pin_mappings)
     if has_x2_objects:
+        # Per-net copper usage (draws = traces, flashes = pads)
+        net_copper_usage = {}
+        for net in net_names:
+            draws = net_draw_counts.get(net, 0)
+            flashes = net_flash_counts.get(net, 0)
+            if draws > 0 or flashes > 0:
+                net_copper_usage[net] = {
+                    "draw_operations": draws,
+                    "flash_operations": flashes,
+                    "total_operations": draws + flashes,
+                }
+
         result["x2_objects"] = {
             "component_refs": sorted(component_pads.keys()),
             "component_pads": {r: c for r, c in sorted(component_pads.items()) if c > 0},
             "component_nets": {r: sorted(ns) for r, ns in sorted(component_nets.items()) if ns},
             "net_names": sorted(net_names),
             "pin_mappings": pin_mappings,
+            "net_copper_usage": net_copper_usage,
         }
 
     # --- Aperture analysis ---
@@ -235,10 +274,21 @@ def parse_gerber(path: str) -> dict:
         if info["width_mm"] > 0:
             all_dims.append(info["width_mm"])
 
+    # Count flash instances per aperture function (KH-173: instance counts, not unique defs)
+    func_flash_counts = {}
+    for ap_id, info in aperture_dims.items():
+        func = info.get("function", "")
+        if func:
+            base_func = func.split(",")[0]
+            flashes = aperture_flash_counts.get(ap_id, 0)
+            func_flash_counts[base_func] = func_flash_counts.get(base_func, 0) + flashes
+
     if func_counts or conductor_widths or all_dims:
         result["aperture_analysis"] = {}
         if func_counts:
             result["aperture_analysis"]["by_function"] = func_counts
+        if func_flash_counts:
+            result["aperture_analysis"]["by_function_flashes"] = func_flash_counts
         if conductor_widths:
             result["aperture_analysis"]["conductor_widths_mm"] = sorted(conductor_widths)
         if all_dims:
@@ -312,6 +362,8 @@ def parse_drill(path: str) -> dict:
 
     current_tool = None
     pending_aper_function = None
+    fmt_decimals = None       # from ; FORMAT={3:3/...} comment
+    coord_divisor = None      # set on first coordinate line
 
     for line in lines:
         line = line.strip()
@@ -321,6 +373,11 @@ def parse_drill(path: str) -> dict:
             result["units"] = "mm"
         elif "INCH" in line:
             result["units"] = "inch"
+
+        # KiCad FORMAT comment: ; FORMAT={3:3/ absolute / metric / ...}
+        fmt_match = re.match(r";\s*FORMAT=\{(\d+):(\d+)/", line)
+        if fmt_match:
+            fmt_decimals = int(fmt_match.group(2))
 
         # X2 attributes from comments: ; #@! TF.Key,Value
         tf_match = re.match(r";\s*#@!\s*TF\.(\w+),(.*)", line)
@@ -360,8 +417,26 @@ def parse_drill(path: str) -> dict:
         # Drill hit
         coord_match = re.match(r"X(-?\d+\.?\d*)Y(-?\d+\.?\d*)", line)
         if coord_match and current_tool:
-            x = float(coord_match.group(1))
-            y = float(coord_match.group(2))
+            x_str = coord_match.group(1)
+            y_str = coord_match.group(2)
+            x = float(x_str)
+            y = float(y_str)
+
+            # Detect integer vs decimal format on first coordinate
+            if coord_divisor is None:
+                if "." in x_str or "." in y_str:
+                    coord_divisor = 1  # explicit decimal — no conversion
+                elif fmt_decimals is not None:
+                    coord_divisor = 10 ** fmt_decimals
+                elif result["units"] == "inch":
+                    coord_divisor = 10000  # standard 2:4 format
+                else:
+                    coord_divisor = 1000   # standard metric 3:3 format
+
+            if coord_divisor > 1:
+                x /= coord_divisor
+                y /= coord_divisor
+
             if result["units"] == "inch":
                 x *= 25.4
                 y *= 25.4
@@ -386,13 +461,15 @@ def parse_drill(path: str) -> dict:
     name_lower = Path(path).name.lower()
     if "NonPlated" in file_func or "npth" in name_lower:
         result["type"] = "NPTH"
+    elif "MixedPlating" in file_func:
+        result["type"] = "mixed"
     elif "Plated" in file_func or "pth" in name_lower:
         result["type"] = "PTH"
     else:
         result["type"] = "unknown"
 
     # Extract layer span from FileFunction (e.g., "Plated,1,4,PTH" → layers 1-4)
-    ff_match = re.match(r"(?:Non)?Plated,(\d+),(\d+)", file_func)
+    ff_match = re.match(r"(?:(?:Non)?Plated|MixedPlating),(\d+),(\d+)", file_func)
     if ff_match:
         result["layer_span"] = [int(ff_match.group(1)), int(ff_match.group(2))]
 
@@ -408,6 +485,10 @@ def identify_layer_type(filename: str, x2_attrs: dict) -> str:
     file_function = x2_attrs.get("FileFunction", "").lower()
     if file_function:
         if "copper" in file_function:
+            # Cross-check: .gko extension always means board outline, even if
+            # X2 FileFunction incorrectly says copper (KiCad 8 export bug)
+            if Path(filename).suffix.lower() == ".gko":
+                return "Edge.Cuts"
             if "top" in file_function:
                 return "F.Cu"
             if "bot" in file_function:
@@ -436,8 +517,8 @@ def identify_layer_type(filename: str, x2_attrs: dict) -> str:
     inner_match = re.search(r"in(\d+)[_.]cu", name)
     if inner_match:
         return f"In{inner_match.group(1)}.Cu"
-    # Protel-style inner layers: .g1, .g2, .g3, .g4
-    protel_inner = re.search(r"\.g(\d+)$", name)
+    # Protel-style inner layers: .g1, .g2, .g3, .g4, .g2l, .g3l, .g4l
+    protel_inner = re.search(r"\.g(\d+)l?$", name)
     if protel_inner:
         layer_num = int(protel_inner.group(1))
         if layer_num >= 1:
@@ -482,7 +563,7 @@ def parse_job_file(path: str) -> dict | None:
     try:
         with open(path, "r") as f:
             data = json.load(f)
-    except Exception:
+    except (json.JSONDecodeError, OSError):
         return None
 
     result = {}
@@ -562,9 +643,32 @@ def classify_drill_tools(drills: list[dict]) -> dict:
             aper = tool_info.get("aper_function", "")
 
             if d.get("type") == "NPTH":
-                mounting_count += count
-                if count > 0:
-                    mounting_tools.append({"diameter_mm": dia, "count": count, "type": "NPTH"})
+                # Check per-tool X2 aper_function first
+                if "ViaDrill" in aper:
+                    via_count += count
+                    if count > 0:
+                        via_tools.append({"diameter_mm": dia, "count": count})
+                elif "ComponentDrill" in aper:
+                    # KH-186: KiCad labels all NPTH as ComponentDrill;
+                    # large NPTH holes (>= 2.5mm) are mounting/standoff holes
+                    if dia >= 2.5:
+                        mounting_count += count
+                        if count > 0:
+                            mounting_tools.append({"diameter_mm": dia, "count": count, "type": "NPTH"})
+                    else:
+                        component_count += count
+                        if count > 0:
+                            component_tools.append({"diameter_mm": dia, "count": count, "type": "NPTH"})
+                else:
+                    # NPTH heuristic: small holes are component alignment pins
+                    if dia <= 2.0:
+                        component_count += count
+                        if count > 0:
+                            component_tools.append({"diameter_mm": dia, "count": count, "type": "NPTH"})
+                    else:
+                        mounting_count += count
+                        if count > 0:
+                            mounting_tools.append({"diameter_mm": dia, "count": count, "type": "NPTH"})
                 continue
 
             if "ViaDrill" in aper:
@@ -572,9 +676,15 @@ def classify_drill_tools(drills: list[dict]) -> dict:
                 if count > 0:
                     via_tools.append({"diameter_mm": dia, "count": count})
             elif "ComponentDrill" in aper:
-                component_count += count
-                if count > 0:
-                    component_tools.append({"diameter_mm": dia, "count": count})
+                # KH-186: large non-plated holes are mounting regardless of X2
+                if "NonPlated" in aper and dia >= 2.5:
+                    mounting_count += count
+                    if count > 0:
+                        mounting_tools.append({"diameter_mm": dia, "count": count, "type": "NPTH"})
+                else:
+                    component_count += count
+                    if count > 0:
+                        component_tools.append({"diameter_mm": dia, "count": count})
             else:
                 # Heuristic fallback
                 if dia <= 0.45:
@@ -625,8 +735,8 @@ def check_completeness(gerbers: list[dict], drills: list[dict],
             "expected_layers": sorted(expected_from_job),
             "missing": sorted(missing),
             "extra": sorted(extra),
-            "has_pth_drill": any(d.get("type") == "PTH" for d in drills),
-            "has_npth_drill": any(d.get("type") == "NPTH" for d in drills),
+            "has_pth_drill": any(d.get("type") in ("PTH", "mixed") for d in drills),
+            "has_npth_drill": any(d.get("type") in ("NPTH", "mixed") for d in drills),
             "complete": len(missing) == 0,
             "source": "gbrjob",
         }
@@ -637,11 +747,15 @@ def check_completeness(gerbers: list[dict], drills: list[dict],
 
     return {
         "found_layers": sorted(found_layers),
+        # expected_layers is schema-required; on the defaults path there's
+        # no .gbrjob to declare expectations, so emit [] honestly (TH-043).
+        "expected_layers": [],
         "missing_required": sorted(required - found_layers),
         "missing_recommended": sorted(recommended - found_layers),
-        "has_pth_drill": any(d.get("type") == "PTH" for d in drills),
-        "has_npth_drill": any(d.get("type") == "NPTH" for d in drills),
-        "complete": len(required - found_layers) == 0 and any(d.get("type") == "PTH" for d in drills),
+        "has_pth_drill": any(d.get("type") in ("PTH", "mixed") for d in drills),
+        "has_npth_drill": any(d.get("type") in ("NPTH", "mixed") for d in drills),
+        "complete": len(required - found_layers) == 0 and any(
+            d.get("type") in ("PTH", "mixed", "unknown") for d in drills),
         "source": "defaults",
     }
 
@@ -670,12 +784,17 @@ def check_alignment(gerbers: list[dict], drills: list[dict]) -> dict:
     widths = [r["width"] for r in alignment_layers.values() if r["width"] > 0]
     heights = [r["height"] for r in alignment_layers.values() if r["height"] > 0]
 
+    # Use relative threshold: 5% of Edge.Cuts dimension, minimum 2.0mm
+    edge = alignment_layers.get("Edge.Cuts")
+    threshold_w = max(2.0, edge["width"] * 0.05) if edge and edge["width"] > 0 else 2.0
+    threshold_h = max(2.0, edge["height"] * 0.05) if edge and edge["height"] > 0 else 2.0
+
     aligned = True
     issues = []
-    if widths and max(widths) - min(widths) > 2.0:
+    if widths and max(widths) - min(widths) > threshold_w:
         aligned = False
         issues.append(f"Width varies by {max(widths) - min(widths):.1f}mm across copper/edge layers")
-    if heights and max(heights) - min(heights) > 2.0:
+    if heights and max(heights) - min(heights) > threshold_h:
         aligned = False
         issues.append(f"Height varies by {max(heights) - min(heights):.1f}mm across copper/edge layers")
 
@@ -696,6 +815,10 @@ def compute_board_dimensions(gerbers: list[dict], job_info: dict | None) -> dict
             cr = g["coordinate_range"]
             w = cr["x_max"] - cr["x_min"]
             h = cr["y_max"] - cr["y_min"]
+            # Convert inches to mm if gerber uses MOIN units
+            if g.get("units") == "inch":
+                w *= 25.4
+                h *= 25.4
             if w > 0 and h > 0:
                 return {"width_mm": round(w, 2), "height_mm": round(h, 2),
                         "area_mm2": round(w * h, 1), "source": "edge_cuts_extents"}
@@ -725,10 +848,10 @@ def build_component_analysis(gerbers: list[dict], drills: list[dict]) -> dict | 
         refs = set(x2o.get("component_refs", []))
         all_refs |= refs
 
-        # Determine component side from which copper layer has the TO.C
-        if layer_type == "F.Cu":
+        # Determine component side from mask/silk/paste/copper layers
+        if layer_type in ("F.Cu", "F.Mask", "F.SilkS", "F.Paste"):
             front_refs |= refs
-        elif layer_type == "B.Cu":
+        elif layer_type in ("B.Cu", "B.Mask", "B.SilkS", "B.Paste"):
             back_refs |= refs
 
         all_nets |= set(x2o.get("net_names", []))
@@ -871,13 +994,27 @@ def build_pad_summary(gerbers: list[dict], drill_class: dict) -> dict:
 
     for g in gerbers:
         aa = g.get("aperture_analysis", {})
-        bf = aa.get("by_function", {})
+        # KH-173: prefer by_function_flashes (instance counts) over by_function (unique defs)
+        bf = aa.get("by_function_flashes") or aa.get("by_function", {})
         lt = g.get("layer_type", "")
         if not lt.endswith(".Cu"):
             continue
         smd += bf.get("SMDPad", 0)
         via += bf.get("ViaPad", 0)
         heatsink += bf.get("HeatsinkPad", 0)
+
+    # Fallback: when no X2 aperture functions, estimate SMD pad count from
+    # paste layer flashes (paste layers only contain SMD pad openings)
+    smd_source = "x2_aperture_function"
+    if smd == 0:
+        paste_flashes = 0
+        for g in gerbers:
+            lt = g.get("layer_type", "")
+            if lt in ("F.Paste", "B.Paste"):
+                paste_flashes += g.get("flash_count", 0)
+        if paste_flashes > 0:
+            smd = paste_flashes
+            smd_source = "paste_layer_flashes"
 
     tht = drill_class.get("component_holes", {}).get("count", 0)
 
@@ -886,9 +1023,13 @@ def build_pad_summary(gerbers: list[dict], drill_class: dict) -> dict:
         "via_apertures": via,
         "heatsink_apertures": heatsink,
         "tht_holes": tht,
+        "smd_source": smd_source,
+        # smd_ratio is a schema-required key; emit 0.0 when nothing to
+        # ratio (no SMD pads and no plated holes) so the schema-vs-emit
+        # drift can't surface (TH-043).
+        "smd_ratio": (round(smd / (smd + tht), 2)
+                      if smd + tht > 0 else 0.0),
     }
-    if smd + tht > 0:
-        result["smd_ratio"] = round(smd / (smd + tht), 2) if (smd + tht) > 0 else 0
 
     return result
 
@@ -995,7 +1136,7 @@ def scan_zip_archives(gerber_dir: Path, loose_gerber_files: list[Path],
 
         except zipfile.BadZipFile:
             entry["error"] = "not a valid zip file"
-        except Exception as e:
+        except (OSError, ValueError, KeyError, TypeError) as e:
             entry["error"] = str(e)
 
         results.append(entry)
@@ -1006,6 +1147,16 @@ def scan_zip_archives(gerber_dir: Path, loose_gerber_files: list[Path],
 # ---------------------------------------------------------------------------
 # Main analysis
 # ---------------------------------------------------------------------------
+
+def _is_excellon_file(path: Path) -> bool:
+    """Check if a file is likely an Excellon drill file by header inspection."""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            head = f.read(1024)
+        return "M48" in head or re.search(r"T\d+C\d", head) is not None
+    except (OSError, UnicodeDecodeError):
+        return False
+
 
 def analyze_gerbers(directory: str, full: bool = False) -> dict:
     """Main analysis function for a gerber directory."""
@@ -1018,15 +1169,24 @@ def analyze_gerbers(directory: str, full: bool = False) -> dict:
 
     # Also pick up uppercase extensions
     for ext in ("*.GBR", "*.GTL", "*.GBL", "*.GTS", "*.GBS", "*.GTO", "*.GBO",
-                "*.GKO", "*.GM1", "*.G1", "*.G2", "*.G3", "*.G4", "*.DRL"):
+                "*.GKO", "*.GM1", "*.G1", "*.G2", "*.G3", "*.G4",
+                "*.G2L", "*.G3L", "*.G4L", "*.G5L", "*.G6L",
+                "*.GTP", "*.GBP", "*.DRL"):
         if ext == "*.DRL":
             drill_files.extend(sorted(gerber_dir.glob(ext)))
         else:
             gerber_files.extend(sorted(gerber_dir.glob(ext)))
 
+    # Eagle outputs drill files with .TXT extension — validate header before including
+    drill_set = set(drill_files)
+    for txt_ext in ("*.TXT", "*.txt"):
+        for txt_path in gerber_dir.glob(txt_ext):
+            if txt_path not in drill_set and _is_excellon_file(txt_path):
+                drill_files.append(txt_path)
+
     gerber_files = sorted(set(gerber_files))
     gerber_files = [f for f in gerber_files
-                    if f.suffix.lower() not in (".drl", ".gbrjob", ".zip", ".pos")]
+                    if f.suffix.lower() not in (".drl", ".gbrjob", ".zip", ".pos", ".txt")]
     drill_files = sorted(set(drill_files))
 
     # Scan zip archives before parsing (uses file lists for timestamp comparison)
@@ -1037,7 +1197,7 @@ def analyze_gerbers(directory: str, full: bool = False) -> dict:
     for gf in gerber_files:
         try:
             gerbers.append(parse_gerber(str(gf)))
-        except Exception as e:
+        except (OSError, ValueError, UnicodeDecodeError) as e:
             gerbers.append({"file": str(gf), "filename": gf.name, "error": str(e),
                             "layer_type": "unknown"})
 
@@ -1045,7 +1205,7 @@ def analyze_gerbers(directory: str, full: bool = False) -> dict:
     for df in drill_files:
         try:
             drills.append(parse_drill(str(df)))
-        except Exception as e:
+        except (OSError, ValueError, UnicodeDecodeError) as e:
             drills.append({"file": str(df), "filename": df.name, "error": str(e)})
 
     job_info = None
@@ -1062,12 +1222,26 @@ def analyze_gerbers(directory: str, full: bool = False) -> dict:
         span = d.get("layer_span")
         if span:
             layer_count = max(layer_count, span[1])
+    # Infer layer count from X2 FileFunction Ln designation (e.g., "Copper,L4,Bot")
+    for g in gerbers:
+        ff = g.get("x2_attributes", {}).get("FileFunction", "")
+        ln_match = re.search(r"Copper,L(\d+)", ff, re.IGNORECASE)
+        if ln_match:
+            layer_count = max(layer_count, int(ln_match.group(1)))
+
+    # Classify drills first — needed by completeness check (KH-184)
+    drill_classification = classify_drill_tools(drills)
+
+    # KH-184: Infer PTH from drill classification when type is unknown
+    if drill_classification.get("vias", {}).get("count", 0) > 0:
+        for d in drills:
+            if d.get("type") == "unknown":
+                d["type"] = "PTH"
 
     # Run checks
     completeness = check_completeness(gerbers, drills, job_info)
     alignment = check_alignment(gerbers, drills)
     board_dims = compute_board_dimensions(gerbers, job_info)
-    drill_classification = classify_drill_tools(drills)
 
     # Higher-level analyses
     component_analysis = build_component_analysis(gerbers, drills)
@@ -1149,6 +1323,8 @@ def analyze_gerbers(directory: str, full: bool = False) -> dict:
                 break
 
     result = {
+        "analyzer_type": "gerber",
+        "schema_version": "1.4.0",
         "directory": str(directory),
         "generator": generator,
         "layer_count": layer_count,
@@ -1183,6 +1359,27 @@ def analyze_gerbers(directory: str, full: bool = False) -> dict:
     if zip_scan:
         result["zip_archives"] = zip_scan
 
+    findings = _build_gerber_findings(
+        completeness, alignment, drill_classification,
+        gerber_summary, drill_summary, result["statistics"])
+    result["findings"] = findings
+    result["assessments"] = []
+
+    sev_counts = {}
+    for f in findings:
+        sev = f.get("severity", "info")
+        sev_counts[sev] = sev_counts.get(sev, 0) + 1
+    result["summary"] = {
+        "total_findings": len(findings),
+        "by_severity": {
+            "error": sev_counts.get("error", 0),
+            "warning": sev_counts.get("warning", 0),
+            "info": sev_counts.get("info", 0),
+        },
+    }
+    from finding_schema import compute_trust_summary
+    result["trust_summary"] = compute_trust_summary(findings)
+
     # Full mode: include raw pin-to-net connectivity
     if full and any(g.get("x2_objects") for g in gerbers):
         all_pins = []
@@ -1202,30 +1399,155 @@ def analyze_gerbers(directory: str, full: bool = False) -> dict:
     return result
 
 
-def _get_schema():
-    """Return JSON output schema description for --schema flag."""
-    return {
-        "directory": "string — scan directory path",
-        "generator": "string (KiCad|other|unknown)",
-        "layer_count": "int",
-        "board_dimensions": {"x_min": "float", "x_max": "float", "y_min": "float",
-                             "y_max": "float", "width_mm": "float", "height_mm": "float"},
-        "statistics": {"gerber_files": "int", "drill_files": "int", "total_holes": "int",
-                       "total_flashes": "int", "total_draws": "int"},
-        "completeness": {"expected_layers": "[string]", "found_layers": "[string]",
-                         "missing_layers": "[string]", "extra_layers": "[string]",
-                         "coverage_percent": "float"},
-        "alignment": "{layer_name: {coord_range: {x_min, x_max, y_min, y_max: float}}}",
-        "drill_classification": {"total_unique": "int", "via_apertures": "int",
-                                 "component_holes": "int", "front_side": "int",
-                                 "back_side": "int", "both_sides": "int",
-                                 "smd_apertures": "int"},
-        "pad_summary": {"smd_apertures": "int", "via_apertures": "int",
-                        "component_holes": "int", "tht": "int"},
-        "gerbers": "[{file, filename, layer_type, format: {zero_omit, notation, x_integer, x_decimal, y_integer, y_decimal}, units: mm|inch, flash_count: int, draw_count: int, region_count: int, apertures: {d_code: {type, params, function}}, x2_attributes: {FileFunction, ...}}]",
-        "drills": "[{file, filename, units: mm|inch|null, type: PTH|NPTH|unknown, hole_count: int, coordinate_range, tools: {tool_id: {diameter_mm: float, hole_count: int}}, x2_attributes}]",
-        "_optional_sections": "component_analysis, net_analysis, trace_widths, job_file, zip_archives, connectivity (--full)",
-    }
+def _build_gerber_findings(completeness, alignment, drill_classification,
+                           gerber_summary, drills, statistics) -> list:
+    """Build rich findings from gerber analysis data."""
+    findings = []
+
+    # GR-001: Missing layers
+    required_layers = {'F.Cu', 'B.Cu', 'Edge.Cuts'}
+    if completeness.get('source') == 'gbrjob':
+        missing = completeness.get('missing', [])
+    else:
+        missing = completeness.get('missing_required', []) + completeness.get('missing_recommended', [])
+        required_layers.update(completeness.get('missing_required', []))
+
+    for layer in missing:
+        is_required = layer in required_layers
+        findings.append({
+            'detector': 'analyze_gerbers',
+            'rule_id': 'GR-001',
+            'category': 'gerber_completeness',
+            'severity': 'warning' if is_required else 'info',
+            'confidence': 'deterministic',
+            'evidence_source': 'topology',
+            'summary': f'Missing layer: {layer}',
+            'description': f'Expected {"required" if is_required else "recommended"} layer {layer} not found in gerber set.',
+            'components': [],
+            'nets': [],
+            'pins': [],
+            'recommendation': f'Add {layer} to gerber export.',
+            'report_context': {'section': 'Gerber Completeness', 'impact': 'Fab may reject' if is_required else 'Assembly quality', 'standard_ref': ''},
+        })
+
+    # GR-003: Missing or empty drill file
+    has_drill = statistics.get('drill_files', 0) > 0
+    if not has_drill:
+        findings.append({
+            'detector': 'analyze_gerbers',
+            'rule_id': 'GR-003',
+            'category': 'gerber_completeness',
+            'severity': 'warning',
+            'confidence': 'deterministic',
+            'evidence_source': 'topology',
+            'summary': 'No drill file in gerber set',
+            'description': 'No Excellon drill file found. PCB fabrication requires drill data.',
+            'components': [],
+            'nets': [],
+            'pins': [],
+            'recommendation': 'Include drill file(s) in gerber export.',
+            'report_context': {'section': 'Gerber Completeness', 'impact': 'Fab will reject', 'standard_ref': ''},
+        })
+    elif statistics.get('total_holes', 0) == 0:
+        findings.append({
+            'detector': 'analyze_gerbers',
+            'rule_id': 'GR-003',
+            'category': 'gerber_completeness',
+            'severity': 'info',
+            'confidence': 'deterministic',
+            'evidence_source': 'topology',
+            'summary': 'Drill file has 0 holes',
+            'description': 'Drill file present but contains no hole definitions.',
+            'components': [],
+            'nets': [],
+            'pins': [],
+            'recommendation': 'Verify drill file was exported correctly.',
+            'report_context': {'section': 'Gerber Completeness', 'impact': '', 'standard_ref': ''},
+        })
+
+    # GR-002: Alignment issues
+    for issue in alignment.get('issues', []):
+        findings.append({
+            'detector': 'analyze_gerbers',
+            'rule_id': 'GR-002',
+            'category': 'gerber_alignment',
+            'severity': 'warning',
+            'confidence': 'deterministic',
+            'evidence_source': 'topology',
+            'summary': f'Alignment: {issue}',
+            'description': f'Layer alignment issue: {issue}',
+            'components': [],
+            'nets': [],
+            'pins': [],
+            'recommendation': 'Re-export gerbers to ensure consistent layer alignment.',
+            'report_context': {'section': 'Gerber Alignment', 'impact': 'Layer misregistration', 'standard_ref': ''},
+        })
+
+    # GR-004: Solder paste aperture mismatch
+    # Compare flash counts between paste and copper layers
+    paste_flashes = {}
+    copper_flashes = {}
+    for g in gerber_summary:
+        lt = g.get('layer_type', '')
+        flashes = g.get('flash_count', 0)
+        if 'Paste' in lt and flashes > 0:
+            side = 'F' if lt.startswith('F') else 'B'
+            paste_flashes[side] = paste_flashes.get(side, 0) + flashes
+        elif '.Cu' in lt and (lt.startswith('F.') or lt.startswith('B.')):
+            side = 'F' if lt.startswith('F') else 'B'
+            copper_flashes[side] = copper_flashes.get(side, 0) + flashes
+
+    for side in paste_flashes:
+        p_count = paste_flashes[side]
+        c_count = copper_flashes.get(side, 0)
+        if c_count > 0 and p_count < c_count * 0.5:
+            ratio = p_count / c_count * 100
+            findings.append({
+                'detector': 'analyze_gerbers',
+                'rule_id': 'GR-004',
+                'category': 'gerber_completeness',
+                'severity': 'warning',
+                'confidence': 'heuristic',
+                'evidence_source': 'topology',
+                'summary': f'{side} paste layer: {p_count} flashes vs {c_count} copper ({ratio:.0f}%)',
+                'description': f'{side}-side paste layer has significantly fewer flashes ({p_count}) than copper layer ({c_count}). This may indicate missing solder paste apertures.',
+                'components': [],
+                'nets': [],
+                'pins': [],
+                'recommendation': 'Check solder paste aperture generation — missing apertures cause assembly defects.',
+                'report_context': {'section': 'Gerber Completeness', 'impact': 'Assembly solder joint quality', 'standard_ref': ''},
+            })
+
+    # GR-005: Board outline not closed (heuristic)
+    # Check if Edge.Cuts layer exists and has reasonable draw count
+    edge_layer = None
+    for g in gerber_summary:
+        if g.get('layer_type', '') == 'Edge.Cuts':
+            edge_layer = g
+            break
+    if edge_layer:
+        draws = edge_layer.get('draw_count', 0)
+        if draws > 0 and draws < 4:
+            findings.append({
+                'detector': 'analyze_gerbers',
+                'rule_id': 'GR-005',
+                'category': 'gerber_completeness',
+                'severity': 'error',
+                'confidence': 'heuristic',
+                'evidence_source': 'topology',
+                'summary': f'Board outline may not be closed — only {draws} draw(s)',
+                'description': f'Edge.Cuts layer has only {draws} draw command(s). A closed rectangular outline needs at least 4. The outline may be incomplete.',
+                'components': [],
+                'nets': [],
+                'pins': [],
+                'recommendation': 'Verify board outline forms a closed shape before submitting to fab.',
+                'report_context': {'section': 'Gerber Completeness', 'impact': 'Fab will reject open outlines', 'standard_ref': ''},
+            })
+    elif completeness.get('complete', True) is False:
+        # Edge.Cuts missing entirely — already covered by GR-001
+        pass
+
+    return findings
 
 
 def main():
@@ -1233,30 +1555,115 @@ def main():
     parser = argparse.ArgumentParser(description="KiCad Gerber & Drill File Analyzer")
     parser.add_argument("directory", nargs="?", help="Path to gerber/drill file directory")
     parser.add_argument("--output", "-o", help="Output JSON file (default: stdout)")
+    parser.add_argument("--analysis-dir",
+                        help="Write gerbers.json to this directory (analysis folder convention)")
     parser.add_argument("--compact", action="store_true", help="Compact JSON output")
     parser.add_argument("--full", action="store_true",
                         help="Include full pin-to-net connectivity data")
+    parser.add_argument("--text", action="store_true",
+                        help="Print human-readable text summary")
     parser.add_argument("--schema", action="store_true",
                         help="Print JSON output schema and exit")
+    parser.add_argument('--stage', default=None,
+                        choices=['schematic', 'layout', 'pre_fab', 'bring_up'],
+                        help='Filter findings by review stage')
+    parser.add_argument('--audience', default=None,
+                        choices=['designer', 'reviewer', 'manager'],
+                        help='Audience level for summaries and --text output')
+    parser.add_argument('--only-deterministic', action='store_true',
+                        help='Accepted for consistency; analyzers never write llm_* fields. '
+                             'Honored by downstream consumers (Phase 4 spec §3.4).')
     args = parser.parse_args()
 
     if args.schema:
-        print(json.dumps(_get_schema(), indent=2))
-        sys.exit(0)
+        emit_schema(GerberEnvelope)
 
     if not args.directory:
         parser.error("the following arguments are required: directory")
 
-    result = analyze_gerbers(args.directory, full=args.full)
-
-    indent = None if args.compact else 2
-    output = json.dumps(result, indent=indent, default=str)
-
-    if args.output:
-        Path(args.output).write_text(output)
-        print(f"Written to {args.output}", file=sys.stderr)
+    # Build inputs provenance block (Track 1.3). Walk the gerber directory
+    # and hash every gerber/drill/job file present.
+    _gerber_dir = Path(args.directory)
+    _gerber_exts = {".gbr", ".gbl", ".gtl", ".gbs", ".gts",
+                    ".gbo", ".gto", ".gm1", ".gko", ".drl",
+                    ".xln", ".nc",
+                    ".g1", ".g2", ".g3", ".g4",
+                    ".g2l", ".g3l", ".g4l", ".g5l", ".g6l",
+                    ".gtp", ".gbp"}
+    _gerber_files = []
+    if _gerber_dir.is_dir():
+        for p in sorted(_gerber_dir.iterdir()):
+            if not p.is_file():
+                continue
+            if p.suffix.lower() in _gerber_exts or p.name.lower().endswith(".gbrjob"):
+                _gerber_files.append(p)
+            elif p.suffix.lower() == ".txt" and _is_excellon_file(p):
+                _gerber_files.append(p)
+    # Resolve canonical analysis_dir ONCE (audit Highest-Risk #4).
+    if args.analysis_dir:
+        _analysis_dir = Path(args.analysis_dir)
+    elif args.output:
+        _analysis_dir = Path(args.output).parent
     else:
-        print(output)
+        _analysis_dir = Path("analysis")
+
+    # Resolve capability_mode_ref BEFORE build_inputs (audit Highest-Risk #5).
+    _capability_mode_ref = get_capability_mode_ref(_analysis_dir)
+
+    inputs = build_inputs(
+        source_files=_gerber_files,
+        run_id=_capability_mode_ref["run_id"],
+    )
+    compat = build_compat()
+
+    result = analyze_gerbers(args.directory, full=args.full)
+    # Inject provenance.
+    result["inputs"] = inputs
+    result["compat"] = compat
+
+    from output_filters import apply_output_filters
+    apply_output_filters(result, args.stage, args.audience)
+
+    # Guarantee every finding carries a stable finding_id (Layer 2 merge keys
+    # on it). Runs after filtering; before any output branch.
+    from finding_schema import assign_finding_ids
+    assign_finding_ids(result.get("findings", []), "gerber")
+
+    # Wire capability_mode_ref (Phase 4 spec §3.3). Resolved early so
+    # inputs.run_id and capability_mode_ref.run_id match.
+    result["capability_mode_ref"] = _capability_mode_ref
+
+    # Determine output path
+    output_path = args.output
+    indent = None if args.compact else 2
+    output_json = json.dumps(result, indent=indent, default=str)
+
+    if not output_path and args.analysis_dir:
+        # Route into the current run folder via the manifest. Use the
+        # canonical filename (gerber.json) so the manifest tracks it.
+        import tempfile
+        from analysis_cache import overwrite_current, CANONICAL_OUTPUTS, get_current_run
+        analysis_dir = args.analysis_dir
+        if not os.path.isabs(analysis_dir):
+            analysis_dir = os.path.abspath(analysis_dir)
+        filename = CANONICAL_OUTPUTS.get('gerber', 'gerber.json')
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            Path(os.path.join(tmp_dir, filename)).write_text(output_json)
+            overwrite_current(analysis_dir, tmp_dir, source_hashes=None)
+        current = get_current_run(analysis_dir)
+        if current:
+            out_path = os.path.join(current[0], filename)
+        else:
+            out_path = os.path.join(analysis_dir, filename)
+        print(f"Written to {out_path}", file=sys.stderr)
+    elif output_path:
+        Path(output_path).write_text(output_json)
+        print(f"Written to {output_path}", file=sys.stderr)
+    elif args.text:
+        from output_filters import format_text
+        print(format_text(result.get('findings', []), args.audience or 'designer', args.stage))
+    else:
+        print(output_json)
 
 
 if __name__ == "__main__":

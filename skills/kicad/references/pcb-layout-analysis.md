@@ -387,7 +387,7 @@ def point_in_bbox(x, y, cx, cy, half_w, half_h, angle_deg=0):
 
 1. **Confusing pad-relative and absolute coordinates** — pad `(at ...)` inside a footprint is relative; segment/via `(start/at ...)` is absolute. Always transform pads before comparing.
 2. **Ignoring footprint rotation** — a pad at `(at 3 0)` in a footprint rotated 90° is actually at a different absolute position. The transform is not optional.
-3. **Net name vs net ID** — segments reference nets by numeric ID, not name. Build the ID→name map from the `(net N "name")` declarations first.
+3. **Net name vs net ID** — in KiCad ≤9, segments reference nets by numeric ID; build the ID→name map from `(net N "name")` declarations. In KiCad 10, nets are referenced by name string directly (no declarations section). The analyzer handles both formats transparently.
 4. **Zone polygon vs filled polygon** — `(polygon ...)` is the user-drawn boundary; `(filled_polygon ...)` is the actual copper after DRC clearance carving. Always use filled polygons for containment tests. The PCB analyzer extracts both: `outline_bbox`/`outline_area_mm2` for the boundary, `filled_bbox`/`filled_area_mm2`/`fill_ratio` for actual copper. The `copper_presence` section reports which components have zone copper on the opposite layer — use this instead of inferring from zone outlines. Zone fills can go stale if the board was edited after the last Fill All Zones (shortcut `B`).
 5. **Assuming net function from name** — net names like VPH*, VSENSE*, etc. can look like power nets but may be sense lines. Always verify by checking connected component types.
 6. **Measuring decoupling distance to IC center** — large modules (ESP32, etc.) can be 18+ mm long with power pins at one edge. Always measure to the IC's actual power pin positions.
@@ -397,15 +397,16 @@ def point_in_bbox(x, y, cx, cy, half_w, half_h, angle_deg=0):
 Some components require careful copper management on both layers. Use the analyzer's `copper_presence` data to verify these — don't infer from zone outlines.
 
 **Capacitive touch pads** (TP prefix, or pad-only footprints on touch nets):
-- Need NO copper on the opposite layer — ground planes under touch pads drastically reduce sensitivity by adding parasitic capacitance
-- Need controlled clearance in same-layer ground pour (typically ≥1mm, check the controller's app note)
-- Trace to the controller should be thin (narrow reduces parasitic capacitance) and direct (no unnecessary length)
+- Need NO copper on the opposite layer — ground planes under touch pads drastically reduce sensitivity by adding parasitic capacitance. But confirming copper absence isn't enough: check that **keepout zones** (rule areas) enforce this on the opposite layer. Without a keepout zone, the copper absence is accidental and one zone refill after a routing change could break touch sensitivity. If no keepout zones exist, flag as WARNING.
+- Need controlled clearance in same-layer ground pour (typically ≥1mm, check the controller's app note). Measure the actual clearance and compare against the spec minimum — if it's at the exact minimum, note the sensitivity margin concern and recommend increasing to 1.5× the minimum.
+- Trace to the controller should be thin (narrow reduces parasitic capacitance) and direct (no unnecessary length). Compare trace lengths across ALL touch pads — asymmetry >1.5× means different parasitic capacitance per channel, shifting baseline readings even with firmware calibration. Report the ratio.
 - Hatched ground pour around the pad is sometimes used instead of solid clearance — check the fill type
+- Report physical details for each pad: diameter/size, position, GND clearance (measured vs spec), trace width, trace length to controller
 
-**Antennas** (ANT prefix, or antenna footprints):
-- PCB trace antennas need copper keep-out on the opposite layer for the antenna area
+**Antennas** (ANT prefix, antenna footprints, or wireless modules with PCB/integrated antennas like ESP32, nRF):
+- PCB trace antennas and module antennas need copper keep-out on ALL relevant layers for the antenna area — verify keepout zones exist and report their coordinates and layer coverage (e.g., "Keepout zone on F.Cu+B.Cu: (8.49, 98.05) to (29.49, 146.05)")
 - Ground plane should end at the antenna feed point, not extend under the radiating element
-- Check manufacturer's reference design for ground plane requirements — some antennas need a specific ground plane size/shape
+- Check manufacturer's reference design for ground plane requirements — the module vendor's layout guide is the authoritative source for keepout dimensions. Always cite the reference when verifying: "Correct per Espressif guidelines"
 
 **RF components** (matching networks, baluns near antenna):
 - Controlled impedance traces need consistent ground reference
@@ -422,6 +423,7 @@ The schematic analysis methodology already prompts for datasheet cross-referenci
 ### Thermal Management
 
 - **Thermal vias**: Compare the number, size, and pattern of thermal vias under QFN/DFN/PowerPAD packages against the IC datasheet's recommended layout. Many datasheets specify exact via count, diameter, and grid pattern (e.g., TI's PowerPAD guidelines: 4×4 array of 0.3mm vias on 1.2mm pitch).
+- **Thermal via effective count methodology**: The `thermal_pad_vias` analyzer output includes an `effective_via_count` that weights each via by its plated barrel cross-section area relative to a 0.3mm reference drill: `(drill_diameter / 0.3)² per via`. Examples: 0.3mm via = 1.0 effective, 0.2mm = 0.44, 0.5mm = 2.78, 1.0mm = 11.1. The `recommended_min_vias` and `recommended_ideal_vias` thresholds are calibrated for 0.3mm reference vias and scale by pad area (pad <10mm²: min 5/ideal 9; 10-25mm²: min 9/ideal 16; >25mm²: 0.5×area/0.8×area). When interpreting the adequacy rating, note that designs intentionally using smaller vias (e.g., 0.2mm to prevent solder wicking through vias during reflow, common in module footprints like ESP32) may appear "insufficient" despite adequate thermal performance. Always cross-reference the via count and drill size against the component datasheet's specific recommendations before flagging as a concern.
 - **θJA validation**: The datasheet's θJA is measured on a specific test board (usually JEDEC 2s2p for 4-layer). If the actual design has fewer layers or smaller copper area, θJA will be worse — note this when assessing thermal adequacy.
 - **Power dissipation check**: Calculate actual power dissipation from the circuit operating conditions (Vin, Vout, Iload for regulators; RDS(on) × I² for MOSFETs) and verify the thermal design can handle it. Flag when junction temperature exceeds the datasheet's maximum rating with margin.
 

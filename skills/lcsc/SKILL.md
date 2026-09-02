@@ -1,6 +1,6 @@
 ---
 name: lcsc
-description: Search LCSC Electronics for electronic components — find parts by LCSC number (Cxxxxx) or MPN, check stock/pricing, download datasheets, analyze specifications. Sister company to JLCPCB, same parts library. Sync and maintain a local datasheets directory for a KiCad project. No API key needed — uses the free jlcsearch community API. Use this skill when the user mentions LCSC, JLCPCB parts library, JLCPCB assembly parts, production sourcing, Cxxxxx part numbers, needs to find LCSC equivalents for parts, is preparing a BOM for JLCPCB assembly, or wants to download datasheets and LCSC is available. For package cross-reference tables and BOM workflow, see the `bom` skill.
+description: Search LCSC Electronics for electronic components — find parts by LCSC number (Cxxxxx) or MPN, check stock/pricing, download datasheets, analyze specifications. Sister company to JLCPCB, same parts library. Sync and maintain a local datasheets directory for a KiCad project, or use batch MPN-list seeding (`--mpn-list`) for bulk workflows without a project. No API key needed — uses the free jlcsearch community API. Use this skill when the user mentions LCSC, JLCPCB parts library, JLCPCB assembly parts, production sourcing, Cxxxxx part numbers, needs to find LCSC equivalents for parts, is preparing a BOM for JLCPCB assembly, or wants to download datasheets and LCSC is available. For package cross-reference tables and BOM workflow, see the `bom` skill.
 ---
 
 # LCSC Electronics — Component Search, Datasheets & Ordering
@@ -15,6 +15,15 @@ Routing map for every PCB / electronics ask: `~/.claude/PCB_DESIGN.md`. For sour
 - **Library placement** comes from `ms-kicad-library` via `${MS_LIB}` (curated `ms-` / quarantined `imported-`); vendor CAD downloads go through `ms-lib-import` → `ms-lib-promote`, never straight into a project.
 - JLCPCB assembly parts: the per-fab DRU + jobset for JLCPCB live in `/home/matt/kicad-config/{dru,jobsets}/` (see the `jlcpcb` skill overlay); `/bom` orchestrates; `/jlcpcb-quote` produces the branded build quote.
 <!-- MS-DOCTRINE-OVERLAY:end -->
+
+## Related Skills
+
+| Skill | Purpose |
+|-------|---------|
+| `kicad` | Schematic analysis — extracts MPNs for part lookup |
+| `bom` | BOM management — orchestrates sourcing across distributors |
+| `jlcpcb` | PCB assembly — shares the same parts library |
+| `spice` | Uses LCSC parametric data for behavioral SPICE models (no auth needed) |
 
 LCSC is JLCPCB's sister company — they share the same parts library and `Cxxxxx` part numbers. Use LCSC for **production sourcing** (assembled boards from JLCPCB/PCBWay). DigiKey/Mouser are for prototyping. For BOM management and export workflows, see `bom`.
 
@@ -129,7 +138,7 @@ LCSC's CDN serves datasheet PDFs directly — no bot protection, no special head
 
 ### Datasheet Directory Sync
 
-Use `sync_datasheets_lcsc.py` to maintain a `datasheets/` directory alongside a KiCad project. Same workflow and `index.json` format as the DigiKey and Mouser skills. **No API key required.**
+Use `sync_datasheets_lcsc.py` to maintain a `datasheets/` directory alongside a KiCad project. Same workflow and `manifest.json` format as the DigiKey and Mouser skills. **No API key required.**
 
 ```bash
 # Sync datasheets for a KiCad project
@@ -146,7 +155,16 @@ python3 <skill-path>/scripts/sync_datasheets_lcsc.py <file.kicad_sch> -o ./my-da
 
 # Parallel downloads (3 workers)
 python3 <skill-path>/scripts/sync_datasheets_lcsc.py <file.kicad_sch> --parallel 3
+
+# Batch mode — sync from a plain MPN list (no KiCad project required)
+python3 <skill-path>/scripts/sync_datasheets_lcsc.py --mpn-list mpns.txt --output ./datasheets
 ```
+
+**MPN-list batch mode** (KH-312) — when you have a list of MPNs but no
+KiCad project to point at. One MPN per line; blank lines and `#`
+comments (full-line and inline) are skipped; generic values are filtered
+via `is_real_mpn()` and de-duplicated. Output defaults to `./datasheets/`
+in the current working directory when `--output` is omitted.
 
 The script:
 - **Runs the kicad schematic analyzer** to extract components, MPNs, and LCSC codes
@@ -154,7 +172,7 @@ The script:
 - **Prefers LCSC code** for search (exact match) — falls back to MPN keyword search
 - **Falls back to wmsc.lcsc.com API** when jlcsearch has no results for an LCSC code (Cxxxxx)
 - **Downloads from LCSC CDN** — direct PDF URLs, no bot protection
-- **Writes `index.json` manifest** — same format as DigiKey/Mouser skills
+- **Writes `manifest.json` manifest** — same format as DigiKey/Mouser skills
 - **Verifies PDF content** — checks MPN, manufacturer, and description keywords
 - **Rate-limited** — 0.5s between API calls (configurable with `--delay`)
 - **Saves progress incrementally** — safe to interrupt
@@ -192,7 +210,7 @@ The script:
 
 ## Web Search Fallback
 
-If the jlcsearch API is unavailable, search LCSC via WebFetch:
+If the jlcsearch API is unavailable, search LCSC by fetching the website directly:
 
 ```
 https://www.lcsc.com/search?q=<query>

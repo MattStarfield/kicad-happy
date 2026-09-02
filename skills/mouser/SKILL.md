@@ -1,6 +1,6 @@
 ---
 name: mouser
-description: Search Mouser Electronics for electronic components — secondary source for prototype orders. Find parts, check pricing/stock, download datasheets, analyze specifications. Use with KiCad for BOM creation and part selection. Use this skill when the user specifically mentions Mouser, when DigiKey is out of stock or has worse pricing, when comparing prices across distributors, or when searching for parts that DigiKey doesn't carry. For package cross-reference tables and BOM workflow, see the `bom` skill.
+description: Search Mouser Electronics for electronic components — secondary source for prototype orders. Find parts, check pricing/stock, download datasheets, analyze specifications. Use with KiCad for BOM creation and part selection. Also supports batch MPN-list seeding (`--mpn-list`) for bulk datasheet workflows without a KiCad project. Use this skill when the user specifically mentions Mouser, when DigiKey is out of stock or has worse pricing, when comparing prices across distributors, or when searching for parts that DigiKey doesn't carry. For package cross-reference tables and BOM workflow, see the `bom` skill.
 ---
 
 # Mouser Electronics Parts Search & Analysis
@@ -15,6 +15,15 @@ Routing map for every PCB / electronics ask: `~/.claude/PCB_DESIGN.md`. For sour
 - **Library placement** comes from `ms-kicad-library` via `${MS_LIB}` (curated `ms-` / quarantined `imported-`); vendor CAD downloads go through `ms-lib-import` → `ms-lib-promote`, never straight into a project.
 - `/bom` orchestrates all distributor + fab skills; `/jlcpcb-quote` produces the branded build quote.
 <!-- MS-DOCTRINE-OVERLAY:end -->
+
+## Related Skills
+
+| Skill | Purpose |
+|-------|---------|
+| `kicad` | Schematic analysis — extracts MPNs for part lookup |
+| `bom` | BOM management — orchestrates sourcing across distributors |
+| `digikey` | Primary prototype source (prefer for datasheets — direct PDF links) |
+| `spice` | Uses Mouser parametric data for behavioral SPICE models |
 
 Mouser is the **secondary source for prototype orders** — use when DigiKey is out of stock or has worse pricing. For production orders, see `lcsc`/`jlcpcb`. For BOM management and export workflows, see `bom`. For datasheets, prefer DigiKey's API (direct PDF links) — Mouser blocks automated PDF downloads.
 
@@ -186,7 +195,7 @@ Note: Mouser's product pages return 403 for most automated requests, so strategy
 
 ### Datasheet Directory Sync
 
-Use `sync_datasheets_mouser.py` to maintain a `datasheets/` directory alongside a KiCad project. Same workflow and `index.json` format as the DigiKey skill.
+Use `sync_datasheets_mouser.py` to maintain a `datasheets/` directory alongside a KiCad project. Same workflow and `manifest.json` format as the DigiKey skill.
 
 ```bash
 # Sync datasheets for a KiCad project
@@ -203,7 +212,22 @@ python3 <skill-path>/scripts/sync_datasheets_mouser.py <file.kicad_sch> -o ./my-
 
 # Parallel downloads (3 workers)
 python3 <skill-path>/scripts/sync_datasheets_mouser.py <file.kicad_sch> --parallel 3
+
+# Batch mode — sync from a plain MPN list (no KiCad project required)
+python3 <skill-path>/scripts/sync_datasheets_mouser.py --mpn-list mpns.txt --output ./datasheets
 ```
+
+**MPN-list batch mode** (KH-312) — when you have a list of MPNs but no
+KiCad project to point at (harness datasheet seeding, bulk part-library
+seeding). One MPN per line; blank lines and `#` comments (full-line and
+inline) are skipped; generic values (`100nF`, `DNP`) are filtered via
+`is_real_mpn()` and de-duplicated. Output defaults to `./datasheets/` in
+the current working directory when `--output` is omitted.
+
+**Rate limiting** — the script paces API calls with a 1.0s delay between
+requests by default (Mouser's Search API allows 30 calls/min on the free
+tier; 1.0s stays comfortably under). Override with `--delay <seconds>` if
+you have a higher-tier key or want to slow things down further.
 
 ### Single Datasheet Download
 
@@ -232,11 +256,11 @@ When all methods fail, provide the `ProductDetailUrl` to the user so they can do
 
 ## Web Search Fallback
 
-If no API key is available, search Mouser via WebFetch:
+If no API key is available, search Mouser by fetching product pages directly:
 
 - Search URL: `https://www.mouser.com/c/?q=<query>`
 - Product pages contain full specs, pricing tiers, stock, datasheets
-- WebFetch results from Mouser can be noisy (JS-heavy pages)
+- Results from Mouser can be noisy (JS-heavy pages)
 
 Include key parameters in the query:
 - **Passives**: value, package (0402/0603/0805), tolerance, voltage/power rating, dielectric (C0G/X7R)

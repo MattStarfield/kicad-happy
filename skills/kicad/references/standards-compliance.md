@@ -38,18 +38,18 @@ Reference tables and formulas for checking PCB designs against industry standard
 
 | Section | Line | Standard |
 |---------|------|----------|
-| Product Classification | ~20 | IPC-A-600G, IPC-2221A |
-| Conductor Spacing | ~45 | IPC-2221A Table 6-1 |
-| Current Carrying Capacity | ~105 | IPC-2221A Section 6.2 |
-| Annular Ring Requirements | ~155 | IPC-2221A Tables 9-1, 9-2 |
-| Hole Size Requirements | ~190 | IPC-2221A Tables 9-3, 9-4, 9-5 |
-| Impedance Calculations | ~225 | IPC-2221A Section 6.4 |
-| Dielectric Properties | ~260 | IPC-2221A Table 6-2 |
-| Via Protection Types | ~290 | IPC-4761 |
-| Creepage and Clearance | ~340 | ECMA-287 (derived from IEC 60664-1) |
-| Safety Standards | ~490 | ECMA-287, IEC 62368-1 |
-| Land Pattern Density | ~530 | IPC-7351B |
-| Current Capacity (Updated) | ~560 | IPC-2152 |
+| Product Classification | ~56 | IPC-A-600G, IPC-2221A |
+| Conductor Spacing | ~73 | IPC-2221A Table 6-1 |
+| Current Carrying Capacity | ~109 | IPC-2221A Section 6.2 |
+| Annular Ring Requirements | ~158 | IPC-2221A Tables 9-1, 9-2 |
+| Hole Size Requirements | ~194 | IPC-2221A Tables 9-3, 9-4, 9-5 |
+| Impedance Calculations | ~224 | IPC-2221A Section 6.4 |
+| Dielectric Properties | ~262 | IPC-2221A Table 6-2 |
+| Via Protection Types | ~279 | IPC-4761 |
+| Creepage and Clearance | ~313 | ECMA-287 (derived from IEC 60664-1) |
+| Safety Standards | ~446 | ECMA-287, IEC 62368-1 |
+| Land Pattern Density | ~481 | IPC-7351B |
+| Current Capacity (Updated) | ~501 | IPC-2152 |
 
 ---
 
@@ -402,7 +402,7 @@ Source: **ECMA-287 Table 3.5**, verified from PDF. Values for basic and suppleme
 
 Linear interpolation between entries is permitted (round up to 0.1 mm).
 
-**Common case for FR-4 PCB at 120V AC mains:** PD2, Material Group IIIb → creepage = 1.5 mm basic, 3.0 mm reinforced. At 230V AC: 2.5 mm basic, 5.0 mm reinforced.
+**Common case for FR-4 PCB at 120V AC mains:** Use the 125V row (closest standard voltage). PD2, Material Group IIIb → creepage = 1.5 mm basic, 3.0 mm reinforced. At 230V AC (use 250V row): 2.5 mm basic, 5.0 mm reinforced.
 
 ### Minimum Separation for Coated Printed Boards
 
@@ -595,3 +595,44 @@ When standards checking is triggered, add this section to the report (after the 
 - Do not require Class 3 tolerances on hobby/prototype boards unless specifically requested
 - Do not flag conductor spacing on low-voltage designs (<15V) unless traces are below the absolute minimum (0.05mm internal, 0.1mm external)
 - Do not apply IPC-2152 for low-current digital signals — the classic IPC-2221A formula is adequate for non-critical traces
+
+---
+
+## Fab House Capabilities (DFM Tier Classification)
+
+Canonical reference for DFM tier determination. The analyzer (`analyze_pcb.py`) uses these values in its `LIMITS_STD` and `LIMITS_ADV` constants. Report generation must cite values from this table — do not substitute values from training data.
+
+**Source:** JLCPCB capabilities page (verified 2025-01), PCBWay capabilities page (verified 2025-01). Fab capabilities change periodically — check the fab's website for the latest values before making DFM decisions.
+
+### JLCPCB
+
+| Parameter | Standard Tier | Advanced Tier |
+|-----------|---------------|---------------|
+| Min trace width | 0.127 mm (5 mil) | 0.1 mm (4 mil) |
+| Min trace spacing | 0.127 mm (5 mil) | 0.1 mm (4 mil) |
+| Min PTH drill | 0.2 mm | 0.15 mm |
+| Min via annular ring | 0.125 mm | 0.1 mm |
+| Min NPTH drill | 0.5 mm | 0.5 mm |
+| Min via diameter (drill+ring) | 0.45 mm | 0.35 mm |
+| Max copper weight | 2 oz | 2 oz |
+| Max layers | 20 | 20 |
+| Min solder mask bridge | 0.1 mm | 0.075 mm |
+| Min silkscreen width | 0.15 mm | 0.1 mm |
+| Board size (no surcharge) | ≤100×100 mm | ≤100×100 mm |
+| Min board dimension | 10 mm | 10 mm |
+
+**Tier determination:** If any metric falls below the standard tier limit, classify as "advanced". If any metric falls below the advanced tier limit, classify as "challenging" (may require manual review or alternative fab).
+
+### PCBWay
+
+| Parameter | Standard |
+|-----------|----------|
+| Min trace width | 0.1 mm (4 mil) |
+| Min trace spacing | 0.1 mm (4 mil) |
+| Min PTH drill | 0.2 mm |
+| Min annular ring | 0.1 mm |
+| Min NPTH drill | 0.8 mm |
+| Max copper weight | 6 oz |
+| Max layers | 14 |
+| Min solder mask bridge | 0.1 mm |
+| Board size (no surcharge) | ≤100×100 mm |
