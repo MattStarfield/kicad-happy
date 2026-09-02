@@ -5,6 +5,17 @@ description: Search LCSC Electronics for electronic components — find parts by
 
 # LCSC Electronics — Component Search, Datasheets & Ordering
 
+<!-- MS-DOCTRINE-OVERLAY:start — rp1-home epic #1441. Keep this block across upstream (aklofas) syncs; rp1-home .claude/hooks/tests/test_pcb_skill_doctrine_overlay.py fails if it goes missing. -->
+## On Matt's machines: the MS PCB Design Doctrine platform
+
+Routing map for every PCB / electronics ask: `~/.claude/PCB_DESIGN.md`. For sourcing specifically:
+
+- **Every part pinned into a design lands in the atomic parts DB** (`partsdb`; rp1-home `scripts/partsdb/`, Device Master Sheet sync via `sheet-sync.py`). A part that lives only in a chat transcript is a doctrine deviation.
+- **Before ordering, run the BOM health check**: `python3 ~/scripts/partsdb/bom-health.py <design.kicad_sch> --boards N` (stock vs qty, price @ qty, lifecycle, snapshot age).
+- **Library placement** comes from `ms-kicad-library` via `${MS_LIB}` (curated `ms-` / quarantined `imported-`); vendor CAD downloads go through `ms-lib-import` → `ms-lib-promote`, never straight into a project.
+- JLCPCB assembly parts: the per-fab DRU + jobset for JLCPCB live in `/home/matt/kicad-config/{dru,jobsets}/` (see the `jlcpcb` skill overlay); `/bom` orchestrates; `/jlcpcb-quote` produces the branded build quote.
+<!-- MS-DOCTRINE-OVERLAY:end -->
+
 LCSC is JLCPCB's sister company — they share the same parts library and `Cxxxxx` part numbers. Use LCSC for **production sourcing** (assembled boards from JLCPCB/PCBWay). DigiKey/Mouser are for prototyping. For BOM management and export workflows, see `bom`.
 
 ## Key Differences from DigiKey/Mouser

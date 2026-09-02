@@ -5,6 +5,17 @@ description: Search DigiKey for electronic components and download datasheets �
 
 # DigiKey Parts Search & Analysis
 
+<!-- MS-DOCTRINE-OVERLAY:start — rp1-home epic #1441. Keep this block across upstream (aklofas) syncs; rp1-home .claude/hooks/tests/test_pcb_skill_doctrine_overlay.py fails if it goes missing. -->
+## On Matt's machines: the MS PCB Design Doctrine platform
+
+Routing map for every PCB / electronics ask: `~/.claude/PCB_DESIGN.md`. For sourcing specifically:
+
+- **Every part pinned into a design lands in the atomic parts DB** (`partsdb`; rp1-home `scripts/partsdb/` — `digikey_to_row.py` turns a DigiKey pick into a complete row, `sheet-sync.py` keeps the Device Master Sheet in step). A part that lives only in a chat transcript is a doctrine deviation.
+- **Before ordering, run the BOM health check**: `python3 ~/scripts/partsdb/bom-health.py <design.kicad_sch> --boards N` (stock vs qty, price @ qty, lifecycle, snapshot age).
+- **Library placement** comes from `ms-kicad-library` via `${MS_LIB}` (curated `ms-` / quarantined `imported-`); vendor CAD downloads go through `ms-lib-import` → `ms-lib-promote`, never straight into a project. DigiKey serves NO first-party CAD (referral links only) — see `claudedocs/pcb-doctrine/preflight-probe-results.md` P3.
+- `/bom` orchestrates all distributor + fab skills; `/jlcpcb-quote` produces the branded build quote.
+<!-- MS-DOCTRINE-OVERLAY:end -->
+
 DigiKey is the **primary source for prototype orders** (Mouser is secondary). Its API returns direct PDF datasheet links, making it the preferred datasheet source. For production orders, see `lcsc`/`jlcpcb`. For BOM management and export workflows, see `bom`.
 
 ## API Credential Setup

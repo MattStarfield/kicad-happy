@@ -5,6 +5,17 @@ description: Search Mouser Electronics for electronic components — secondary s
 
 # Mouser Electronics Parts Search & Analysis
 
+<!-- MS-DOCTRINE-OVERLAY:start — rp1-home epic #1441. Keep this block across upstream (aklofas) syncs; rp1-home .claude/hooks/tests/test_pcb_skill_doctrine_overlay.py fails if it goes missing. -->
+## On Matt's machines: the MS PCB Design Doctrine platform
+
+Routing map for every PCB / electronics ask: `~/.claude/PCB_DESIGN.md`. For sourcing specifically:
+
+- **Every part pinned into a design lands in the atomic parts DB** (`partsdb`; rp1-home `scripts/partsdb/`, Device Master Sheet sync via `sheet-sync.py`). A part that lives only in a chat transcript is a doctrine deviation.
+- **Before ordering, run the BOM health check**: `python3 ~/scripts/partsdb/bom-health.py <design.kicad_sch> --boards N` (stock vs qty, price @ qty, lifecycle, snapshot age).
+- **Library placement** comes from `ms-kicad-library` via `${MS_LIB}` (curated `ms-` / quarantined `imported-`); vendor CAD downloads go through `ms-lib-import` → `ms-lib-promote`, never straight into a project.
+- `/bom` orchestrates all distributor + fab skills; `/jlcpcb-quote` produces the branded build quote.
+<!-- MS-DOCTRINE-OVERLAY:end -->
+
 Mouser is the **secondary source for prototype orders** — use when DigiKey is out of stock or has worse pricing. For production orders, see `lcsc`/`jlcpcb`. For BOM management and export workflows, see `bom`. For datasheets, prefer DigiKey's API (direct PDF links) — Mouser blocks automated PDF downloads.
 
 ## API Credential Setup

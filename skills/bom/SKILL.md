@@ -5,6 +5,12 @@ description: "BOM (Bill of Materials) management for electronics projects — th
 
 # BOM Management
 
+<!-- MS-DOCTRINE-OVERLAY:start — rp1-home epic #1441. Keep this block across upstream (aklofas) syncs; rp1-home .claude/hooks/tests/test_pcb_skill_doctrine_overlay.py fails if it goes missing. -->
+## On Matt's machines: the MS PCB Design Doctrine platform
+
+Routing map for every PCB / electronics ask: `~/.claude/PCB_DESIGN.md`. This skill is the sourcing orchestrator INSIDE that platform: BOM data lives as KiCad symbol properties **and** as rows in the atomic parts DB (`partsdb`, `.kicad_dbl`, Device Master Sheet sync — schema in `/home/matt/claudedocs/pcb-doctrine/parts-db-schema.md`); the design-time BOM health check below is the doctrine's W4.3 standing practice; fab packages come from the per-fab jobsets (see the overlay in the `jlcpcb` / `pcbway` skills); library placement comes from `ms-kicad-library` via `${MS_LIB}`, and vendor CAD goes through `ms-lib-import` → `ms-lib-promote`, never straight into a project.
+<!-- MS-DOCTRINE-OVERLAY:end -->
+
 BOM data lives in **KiCad schematic symbol properties** as the single source of truth. This skill orchestrates the full lifecycle: analyze the schematic, search distributors, validate parts, write properties back, export tracking CSVs, and generate order files.
 
 ## Related Skills

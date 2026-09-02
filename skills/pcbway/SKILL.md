@@ -5,6 +5,17 @@ description: PCBWay PCB fabrication and assembly — turnkey/consigned assembly,
 
 # PCBWay — PCB Fabrication & Assembly
 
+<!-- MS-DOCTRINE-OVERLAY:start — rp1-home epic #1441. Keep this block across upstream (aklofas) syncs; rp1-home .claude/hooks/tests/test_pcb_skill_doctrine_overlay.py fails if it goes missing. -->
+## On Matt's machines: the MS PCB Design Doctrine platform
+
+Routing map for every PCB / electronics ask: `~/.claude/PCB_DESIGN.md`. For fabrication specifically:
+
+- **Design rules come from the per-fab DRU**, not hand-typed: `/home/matt/kicad-config/dru/pcbway-{2,4}layer.kicad_dru` (every value cited from PCBWay's capability page — `claudedocs/pcb-doctrine/fab-capability-sources.md`; `scripts/compose-kicad-dru.sh` applies one to a project).
+- **The fab package comes from the jobset**, not ad-hoc exports: `/home/matt/kicad-config/jobsets/pcbway-fab-package.kicad_jobset` emits Gerbers, drill, placement, BOM, STEP/GLB, IPC-2581 and ODB++ in one `kicad-cli jobset run`; verification recipe in `claudedocs/pcb-doctrine/fab-package-verification.md`.
+- **Gate before you generate**: `python3 /home/matt/kicad-config/kicad-lint/cli.py <project>` must exit 0 (1 = blocking violations, 2 = tool error); the hardware-CI template runs the same gate on every PR.
+- **Turnkey with non-LCSC parts** is the reason to pick PCBWay over JLCPCB; the parts still come from the atomic parts DB (`partsdb`) and pass `bom-health` before the order.
+<!-- MS-DOCTRINE-OVERLAY:end -->
+
 PCBWay is a PCB fabrication and assembly service based in Shenzhen, China. It is an alternative to JLCPCB with similar capabilities and pricing.
 
 **Typical usage**: Order bare prototype PCBs + framed stencil from PCBWay during prototyping (parts sourced separately from DigiKey/Mouser, hand-assembled in lab). For production runs (100s qty), order fully assembled boards from PCBWay using turnkey component sourcing (PCBWay sources parts by MPN). JLCPCB is the primary alternative. For BOM management, gerber/CPL export, and stencil ordering, see the `bom` skill.
