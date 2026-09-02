@@ -56,18 +56,6 @@ python3 <skill-path>/scripts/translate_bom_pnp.py bom input_bom.csv -o jlc_bom.c
 python3 <skill-path>/scripts/translate_bom_pnp.py pnp input_cpl.csv -o jlc_cpl.csv --bom jlc_bom.csv
 ```
 
-## Workflow
-
-Skip steps that don't apply. Common shortcuts:
-- **"Add Mouser PNs"** — search Mouser by MPN for each part → validate → write to schematic → update CSV
-- **"Fill in the gaps"** — run analyzer with `--gaps-only`, address each missing field
-- **"Update datasheet URLs"** — run `sync_datasheet_urls.py` to backfill empty Datasheet fields from the datasheets manifest
-- **"Prepare for production"** — ensure every part has an LCSC number, check stock, set Chosen_Distributor to LCSC
-
-### Step 1: Understand the Project
-
-```bash
-
 ## Design-Time BOM Health (Standing Practice)
 
 Run the **design-session BOM health check** (rp1-home `scripts/partsdb/bom-health.py`, MS PCB
@@ -87,6 +75,18 @@ datum; BOM lines with no DB row are reported as coverage gaps. It is **read-only
 schematic and the Device Master Sheet (exit 0/1/2 advisory — W4 intelligence, not a lint gate).
 Durable snapshot refresh is a separate command, `scripts/partsdb/refresh-snapshots.py`. Doctrine:
 rp1-home `claudedocs/pcb-doctrine/bom-health-check.md`.
+
+## Workflow
+
+Skip steps that don't apply. Common shortcuts:
+- **"Add Mouser PNs"** — search Mouser by MPN for each part → validate → write to schematic → update CSV
+- **"Fill in the gaps"** — run analyzer with `--gaps-only`, address each missing field
+- **"Update datasheet URLs"** — run `sync_datasheet_urls.py` to backfill empty Datasheet fields from the datasheets manifest
+- **"Prepare for production"** — ensure every part has an LCSC number, check stock, set Chosen_Distributor to LCSC
+
+### Step 1: Understand the Project
+
+```bash
 python3 <skill-path>/scripts/bom_manager.py analyze path/to/schematic.kicad_sch --json --recursive
 ```
 
