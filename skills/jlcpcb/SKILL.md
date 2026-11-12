@@ -10,9 +10,9 @@ description: JLCPCB PCB fabrication and assembly — BOM/CPL generation, basic v
 
 Routing map for every PCB / electronics ask: `~/.claude/PCB_DESIGN.md`. For fabrication specifically:
 
-- **Design rules come from the per-fab DRU**, not hand-typed: `/home/matt/kicad-config/dru/jlcpcb-{2,4}layer.kicad_dru` (every value cited from JLCPCB's capability page — `claudedocs/pcb-doctrine/fab-capability-sources.md`; `scripts/compose-kicad-dru.sh` applies one to a project).
-- **The fab package comes from the jobset**, not ad-hoc exports: `/home/matt/kicad-config/jobsets/jlcpcb-fab-package.kicad_jobset` emits Gerbers, drill, placement, BOM, STEP/GLB, IPC-2581 and ODB++ in one `kicad-cli jobset run`; verification recipe in `claudedocs/pcb-doctrine/fab-package-verification.md`.
-- **Gate before you generate**: `python3 /home/matt/kicad-config/kicad-lint/cli.py <project>` must exit 0 (1 = blocking violations, 2 = tool error); the hardware-CI template runs the same gate on every PR.
+- **Design rules come from the per-fab DRU**, not hand-typed: `~/kicad-config/dru/jlcpcb-{2,4}layer.kicad_dru` (every value cited from JLCPCB's capability page — `claudedocs/pcb-doctrine/fab-capability-sources.md`; `scripts/compose-kicad-dru.sh` applies one to a project).
+- **The fab package comes from the jobset**, not ad-hoc exports: `~/kicad-config/jobsets/jlcpcb-fab-package.kicad_jobset` emits Gerbers, drill, placement, BOM, STEP/GLB, IPC-2581 and ODB++ in one `kicad-cli jobset run`; verification recipe in `claudedocs/pcb-doctrine/fab-package-verification.md`.
+- **Gate before you generate**: `python3 ~/kicad-config/kicad-lint/cli.py <project>` must exit 0 (1 = blocking violations, 2 = tool error); the hardware-CI template runs the same gate on every PR.
 - **Client quotes**: `/jlcpcb-quote` produces the SPD-branded build-quote PDF (bare PCB via API + LCSC categorization + consigned-part pricing + labor estimate).
 <!-- MS-DOCTRINE-OVERLAY:end -->
 
