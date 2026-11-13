@@ -22,7 +22,7 @@ JLCPCB is a PCB fabrication and assembly service based in Shenzhen, China. It is
 
 ## How to use this skill — the `jlcpcb-cli` tool
 
-Matt has an approved JLCPCB Open Platform API account. A working CLI is on PATH at `~/.local/bin/jlcpcb-cli` (wraps `~/scripts/jlcpcb-api/jlcpcb_cli.py`).
+Matt has an approved JLCPCB Open Platform API account. A working CLI is on PATH at `~/.local/bin/jlcpcb-cli` (v2 since rp1-home#3215: it wraps `~/scripts/jlcpcb-api/jlcpcb_cli_v2.py`). Check `jlcpcb-cli --version` prints `jlcpcb-cli 2.0.0`; if it prints the usage text instead, that machine's rp1-home checkout predates v2 and has no `pcb upload` or `pcb order create`. The flow, the request fields, the safety model and the exit codes are in `~/scripts/jlcpcb-api/README.md`.
 
 **Always reach for `jlcpcb-cli` first** for anything programmatic against JLCPCB. Fall back to Playwright only for PCBA workflows (assembly is NOT exposed via the API).
 
@@ -31,15 +31,19 @@ jlcpcb-cli auth verify              # confirm credentials + which API scopes are
 jlcpcb-cli component C14663         # look up an LCSC C-number
 jlcpcb-cli component-search 100nF   # search public component library
 jlcpcb-cli private-stock            # list consigned (private) component inventory
-jlcpcb-cli pcb quote <fileId> --layers 8 --qty 10 --finish ENIG --thickness 1.6
-jlcpcb-cli pcb audit <fileId>       # parsed Gerber info (dimensions, preview)
+jlcpcb-cli pcb upload <gerbers.zip> # multipart Gerber upload; prints the fileKey and the DFM audit verdict
+jlcpcb-cli pcb audit <fileKey>      # parsed Gerber info (layers, size, DFM findings)
+jlcpcb-cli pcb quote <fileKey> --layers 8 --qty 10 --finish ENIG --thickness 1.6
+jlcpcb-cli pcb order create <fileKey> --layers 8 --qty 10 --ship-to <ship-to.json> --shipping "<name>"   # DRY RUN: prints the order and a fingerprint, orders nothing
 jlcpcb-cli pcb order detail <batchNum>
-jlcpcb-cli pcb order wip <batchNum>
+jlcpcb-cli pcb order wip <orderId>   # the orderId that `pcb order create` returned, not the batchNum
 jlcpcb-cli bom translate <input.xlsx|.csv> -o <output.csv>
 jlcpcb-cli pnp translate <input.csv> -o <output-cpl.csv>
 ```
 
 Default output is human-readable tables. **For programmatic / LLM consumption always pass `--json`** to get parseable output.
+
+**`pcb order create` spends money only at the second step.** Without `--confirm` it is a dry run: it prints the full order, the price and a fingerprint, and orders nothing. A paid order is placed only by running the printed command with `--confirm <fingerprint>` within 30 minutes. Always get Matt's explicit approval before that step, because the README's Payment section records that it is not known whether JLCPCB charges at once; treat the confirmed create as the moment money is spent. If an attempt ends with an unknown outcome, do not retry: settle it with `pcb order resolve` as the README describes.
 
 ### Credentials & auth
 
@@ -171,8 +175,8 @@ If a client uses an unusual format that the translator doesn't auto-detect, edit
 
 - Memory entry: `~/.claude/projects/-mnt-netshare-git-geltech/memory/reference_jlcpcb_api.md` (geltech-specific notes)
 - Skill scripts: `~/.claude/skills/jlcpcb/scripts/translate_bom_pnp.py`
-- Library: `~/scripts/jlcpcb-api/jlcpcb_client.py` (importable)
-- CLI: `~/.local/bin/jlcpcb-cli` (wrapper) and `~/scripts/jlcpcb-api/jlcpcb_cli.py` (implementation)
+- Library: `~/scripts/jlcpcb-api/jlcpcb_client_v2.py` (importable; it refuses the create endpoint outside `create_order()`)
+- CLI: `~/.local/bin/jlcpcb-cli` (wrapper) and `~/scripts/jlcpcb-api/jlcpcb_cli_v2.py` (implementation); docs in `~/scripts/jlcpcb-api/README.md`
 - Reference Python SDK (for endpoint discovery): https://github.com/i2cjak/jlcpcb_api
 
 ## Related Skills
